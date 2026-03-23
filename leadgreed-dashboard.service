@@ -1,0 +1,19 @@
+[Unit]
+Description=LeadGreed Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/LeadGreed-Bot
+ExecStart=/root/LeadGreed-Bot/venv/bin/python dashboard.py
+Restart=always
+RestartSec=3
+
+# Memory limit
+MemoryMax=512M
+OOMScoreAdjust=-200
+
+[Install]
+WantedBy=multi-user.target
+

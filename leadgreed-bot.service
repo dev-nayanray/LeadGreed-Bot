@@ -1,0 +1,25 @@
+[Unit]
+Description=LeadGreed Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/LeadGreed-Bot
+ExecStart=/root/LeadGreed-Bot/venv/bin/python main.py
+Restart=always
+RestartSec=5
+
+# LOW RAM
+Environment='PLAYWRIGHT_BROWSERS_PATH=/tmp/playwright'
+Environment='PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1'
+ExecStartPre=/root/LeadGreed-Bot/venv/bin/playwright install --with-deps chromium
+
+# Memory limits (8GB VPS)
+MemoryMax=3G
+MemorySwapMax=1G
+OOMScoreAdjust=-900
+
+[Install]
+WantedBy=multi-user.target
+
