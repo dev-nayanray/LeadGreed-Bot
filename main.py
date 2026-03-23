@@ -26,7 +26,7 @@ from telegram.ext import (
 # ─────────────────────────────────────────
 from config import (
     CRM_URL, CRM_EMAIL, CRM_PASSWORD,
-    TELEGRAM_TOKEN, ANTHROPIC_API_KEY, ALLOWED_CHAT_ID
+    TELEGRAM_TOKEN, ANTHROPIC_API_KEY, ALLOWED_USERS
 )
 import action_log as alog
 # ─────────────────────────────────────────
@@ -49,6 +49,31 @@ _page: Optional[Page] = None
 # Хранилище ожидающих подтверждения команд
 pending: dict = {}
 
+# ══════════════════════════════════════════
+#  ОЧЕРЕДЬ ЗАДАЧ
+# ══════════════════════════════════════════
+
+_task_queue: Optional[asyncio.Queue] = None
+_queue_worker_task = None
+
+
+async def _queue_worker():
+    """Воркер — обрабатывает задачи из очереди по одной."""
+    while True:
+        task_func, args, kwargs = await _task_queue.get()
+        try:
+            await task_func(*args, **kwargs)
+        except Exception as e:
+            log.exception(f"Queue error: {e}")
+        finally:
+            _task_queue.task_done()
+
+
+async def enqueue(task_func, *args, **kwargs):
+    """Добавить задачу в очередь. Возвращает позицию в очереди."""
+    await _task_queue.put((task_func, args, kwargs))
+    return _task_queue.qsize()
+
 
 # ══════════════════════════════════════════
 #  AI — разбор команды пользователя
@@ -59,15 +84,16 @@ SYSTEM_PROMPT = """
 Получаешь команду на русском языке и возвращаешь ТОЛЬКО JSON — без пояснений, без markdown.
 
 Возможные action:
-- change_hours  — изменить часы работы брокера
-- add_hours     — добавить часы для новой страны
+- change_hours  — изменить часы работы broker
+- add_hours     — добавить hours for новой страны
 - close_days    — закрыть конкретные дни (убрать галочки) для страны
-- add_revenue   — добавить прайс/выплату для страны брокера
-- toggle_broker — включить / выключить брокера
+- add_revenue   — добавить прайс/выплату для страны broker
+- toggle_broker — включить / выключить broker
 - add_affiliate_revenue — добавить прайс/выплату для аффилиата
 - get_affiliate_revenue — узнать прайс аффилиата для страны
 - get_broker_revenue   — узнать прайс брокера для страны
 - get_hours            — узнать текущие часы работы брокера для страны
+- change_caps          — изменить дневной лимит (cap) брокера для страны
 - unknown              — команда непонятна
 
 Структура JSON (общая):
@@ -110,7 +136,7 @@ SYSTEM_PROMPT = """
 - no_traffic по умолчанию true
 - Названия стран могут быть написаны с опечатками, на русском, или как ISO код (2 буквы). Всегда переводи в английское полное название.
 - ВАЖНО: Никогда не склеивай имя брокера/аффилиата и страну в одно поле. ISO коды (DE, FR, ES...) и названия стран (германия, испания...) — это ВСЕГДА countries, а не часть broker_ids. Пример: "легион де" → broker_ids: ["Legion"], countries: ["Germany"], а НЕ broker_ids: ["Legion DE"].
-- Названия брокеров и аффилиатов могут быть написаны кириллицей — транслитерируй в латиницу. Примеры: "мн"→"MN", "нексус"→"Nexus", "марси"→"Marsi", "фара"→"Farah", "капитан"→"Capitan", "ройбис"→"RoiBees", "финтрикс"→"Fintrix". Общее правило транслитерации: м→M, н→N, к→K, с→S, р→R и т.д. Сохраняй регистр как в оригинальном названии если известно, иначе используй Title Case. Примеры: "белигия"→"Belgium", "аргентина"→"Argentina", "KE"→"Kenya", "NG"→"Nigeria", "DE"→"Germany", "UK"→"United Kingdom", "IT"→"Italy", "FR"→"France", "ES"→"Spain", "PL"→"Poland", "RO"→"Romania", "HU"→"Hungary", "CZ"→"Czech Republic", "PT"→"Portugal", "GR"→"Greece", "SE"→"Sweden", "NO"→"Norway", "FI"→"Finland", "DK"→"Denmark", "NL"→"Netherlands", "BE"→"Belgium", "AT"→"Austria", "CH"→"Switzerland", "TR"→"Turkey", "IL"→"Israel", "AE"→"United Arab Emirates", "SA"→"Saudi Arabia", "ZA"→"South Africa", "EG"→"Egypt", "MA"→"Morocco", "GH"→"Ghana", "TZ"→"Tanzania", "UG"→"Uganda", "ET"→"Ethiopia", "IN"→"India", "PK"→"Pakistan", "BD"→"Bangladesh", "ID"→"Indonesia", "TH"→"Thailand", "VN"→"Vietnam", "PH"→"Philippines", "MY"→"Malaysia", "SG"→"Singapore", "JP"→"Japan", "KR"→"South Korea", "CN"→"China", "AU"→"Australia", "NZ"→"New Zealand", "CA"→"Canada", "MX"→"Mexico", "CO"→"Colombia", "PE"→"Peru", "CL"→"Chile", "VE"→"Venezuela", "EC"→"Ecuador", "BO"→"Bolivia", "PY"→"Paraguay", "UY"→"Uruguay", "CR"→"Costa Rica", "DO"→"Dominican Republic", "GT"→"Guatemala", "HN"→"Honduras", "SV"→"El Salvador", "NI"→"Nicaragua", "PA"→"Panama", "CU"→"Cuba", "US"→"United States", "BR"→"Brazil", "AR"→"Argentina", "UA"→"Ukraine", "RU"→"Russia", "BY"→"Belarus", "KZ"→"Kazakhstan", "UZ"→"Uzbekistan", "AZ"→"Azerbaijan", "GE"→"Georgia", "AM"→"Armenia", "MD"→"Moldova", "LT"→"Lithuania", "LV"→"Latvia", "EE"→"Estonia", "BG"→"Bulgaria", "HR"→"Croatia", "RS"→"Serbia", "SK"→"Slovakia", "SI"→"Slovenia", "BA"→"Bosnia and Herzegovina", "AL"→"Albania", "MK"→"North Macedonia", "ME"→"Montenegro"
+- Названия брокеров и аффилиатов могут быть написаны кириллицей — транслитерируй в латиницу. Примеры: "мн"→"MN", "нексус"→"Nexus", "марси"→"Marsi", "фара"→"Farah", "капитан"→"Capitan", "ройбис"→"RoiBees", "финтрикс"→"Fintrix". Общее правило транслитерации: м→M, н→N, к→K, с→S, р→R и т.д. Сохраняй регистр как в оригинальном названии если известно, иначе используй Title Case. Примеры: "белигия"→"Belgium", "аргентина"→"Argentina", "KE"→"Kenya", "NG"→"Nigeria", "DE"→"Germany", "UK"→"United Kingdom", "IT"→"Italy", "FR"→"France", "ES"→"Spain", "PL"→"Poland", "RO"→"Romania", "HU"→"Hungary", "CZ"→"Czech Republic", "PT"→"Portugal", "GR"→"Greece", "SE"→"Sweden", "NO"→"Norway", "FI"→"Finland", "DK"→"Denmark", "NL"→"Netherlands", "BE"→"Belgium", "AT"→"Austria", "CH"→"Switzerland", "TR"→"Turkey", "IL"→"Israel", "AE"→"United Arab Emirates", "SA"→"Saudi Arabia", "ZA"→"South Africa", "EG"→"Egypt", "MA"→"Morocco", "GH"→"Ghana", "TZ"→"Tanzania", "UG"→"Uganda", "ET"→"Ethiopia", "IN"→"India", "PK"→"Pakistan", "BD"→"Bangladesh", "ID"→"Indonesia", "TH"→"Thailand", "VN"→"Vietnam", "PH"→"Philippines", "MY"→"Malaysia", "SG"→"Singapore", "JP"→"Japan", "KR"→"Korea, Republic of", "CN"→"China", "AU"→"Australia", "NZ"→"New Zealand", "CA"→"Canada", "MX"→"Mexico", "CO"→"Colombia", "PE"→"Peru", "CL"→"Chile", "VE"→"Venezuela", "EC"→"Ecuador", "BO"→"Bolivia", "PY"→"Paraguay", "UY"→"Uruguay", "CR"→"Costa Rica", "DO"→"Dominican Republic", "GT"→"Guatemala", "HN"→"Honduras", "SV"→"El Salvador", "NI"→"Nicaragua", "PA"→"Panama", "CU"→"Cuba", "US"→"United States", "BR"→"Brazil", "AR"→"Argentina", "UA"→"Ukraine", "RU"→"Russia", "BY"→"Belarus", "KZ"→"Kazakhstan", "UZ"→"Uzbekistan", "AZ"→"Azerbaijan", "GE"→"Georgia", "AM"→"Armenia", "MD"→"Moldova", "LT"→"Lithuania", "LV"→"Latvia", "EE"→"Estonia", "BG"→"Bulgaria", "HR"→"Croatia", "RS"→"Serbia", "SK"→"Slovakia", "SI"→"Slovenia", "BA"→"Bosnia and Herzegovina", "AL"→"Albania", "MK"→"North Macedonia", "ME"→"Montenegro"
 - "завтра", "послезавтра" и т.д. переводи в название дня на английском (Monday/Tuesday/...)
 - Сегодняшняя дата и день будут переданы в запросе
 - Для close_days с НЕСКОЛЬКИМИ странами используй поле countries_days:
@@ -150,7 +176,18 @@ SYSTEM_PROMPT = """
     → {"action": "get_hours", "broker_ids": ["Legion"], "countries": ["Germany"]}
   ВАЖНО: ISO коды (DE, FR, ES...) и названия стран — это ВСЕГДА страны, а НЕ часть имени брокера.
   Никогда не склеивай имя брокера и страну в одну строку.
-  Если страна не указана — countries: ["all"] (показать все страны)
+  Если страна не указана — countries: ["all"] (показать all countries)
+- Для change_caps: broker_ids = брокер, country_caps = список {country, cap}
+  Ключевые слова: "cap", "капа", "кап", "лимит", "total cap"
+  Если одна страна и одна капа — тоже country_caps (список из одного элемента).
+  Примеры:
+  • "set Legion DE cap 20" → {"action": "change_caps", "broker_ids": ["Legion"], "country_caps": [{"country": "Germany", "cap": 20}]}
+  • "поставь капу по германии для легиона 20" → {"action": "change_caps", "broker_ids": ["Legion"], "country_caps": [{"country": "Germany", "cap": 20}]}
+  • "legion de total cap 20" → {"action": "change_caps", "broker_ids": ["Legion"], "country_caps": [{"country": "Germany", "cap": 20}]}
+  • "Nexus DE 15 cap ES 20 cap" → {"action": "change_caps", "broker_ids": ["Nexus"], "country_caps": [{"country": "Germany", "cap": 15}, {"country": "Spain", "cap": 20}]}
+  • "капитан FR ES cap 10" → {"action": "change_caps", "broker_ids": ["Capitan"], "country_caps": [{"country": "France", "cap": 10}, {"country": "Spain", "cap": 10}]}
+  ВАЖНО: cap должен быть числом (int). Country обязательна.
+  Отличай от прайсов! "cap", "кап", "лимит" → change_caps. "прайс", "price", "$" → add_revenue.
 
 Если пользователь запрашивает прайсы для НЕСКОЛЬКИХ объектов (аффов и/или брокеров) сразу — используй поле "queries":
 {
@@ -245,7 +282,7 @@ SYSTEM_PROMPT = """
   Если день не указан — оставляй "requested_day": null.
   Бот сам решит что делать:
   • день указан + будний → создаст/обновит с Пн–Пт
-  • день указан + выходной → только этот день
+  • день указан + weekend → только этот день
   • день не указан → рабочие дни (Пн–Пт) по умолчанию
 
 Пример:
@@ -276,9 +313,9 @@ SYSTEM_PROMPT = """
 - Если написано "поставь на выходные" — days_to_keep: ["Saturday","Sunday"], но корректируй с учётом OFF-строк (если SUNDAY OFF — убирай Sunday из days_to_keep)
 - Если написано "поставь на субботу" — days_to_keep: ["Saturday"]
 - Если написано "поставь на воскресенье" — days_to_keep: ["Sunday"]
-- Генерируй country_hours: один элемент на каждую страну из GEO с часами соответствующего деска
+- Генерируй country_hours: один элемент на каждую страну из GEO with hours соответствующего деска
 - Слово "desk" игнорируй — оно не несёт смысла для CRM
-- Если пользователь задаёт РАЗНЫЕ часы для разных групп дней (например, рабочие 10-19 и суббота 10-15), используй поле "schedule_groups":
+- Если пользователь задаёт РАЗНЫЕ hours for разных групп дней (например, рабочие 10-19 и суббота 10-15), используй поле "schedule_groups":
   [
     {"days": ["Monday","Tuesday","Wednesday","Thursday","Friday"], "start": "10:00", "end": "19:00"},
     {"days": ["Saturday"], "start": "10:00", "end": "15:00"}
@@ -290,9 +327,9 @@ SYSTEM_PROMPT = """
       {"days": ["Monday","Tuesday","Wednesday","Thursday","Friday"], "start": "10:00", "end": "19:00"},
       {"days": ["Saturday"], "start": "10:00", "end": "15:00"}
     ]
-- Для desk-формата всегда ставь "skip_missing": true — не нужно добавлять страны которых нет у брокера, только обновлять существующие
+- Для desk-формата всегда ставь "skip_missing": true — не нужно добавлять страны которых not found for broker, только обновлять существующие
 
-Пример команды: "поставь часы для этих стран на субботу: JP desk 07:30-12:30 / GEO: JP / EN desk 11:00-17:00 / GEO: BE FI NL"
+Пример команды: "поставь hours for этих стран на субботу: JP desk 07:30-12:30 / GEO: JP / EN desk 11:00-17:00 / GEO: BE FI NL"
 Результат:
 {
   "action": "add_hours",
@@ -353,7 +390,7 @@ async def get_page() -> Page:
     global _playwright, _browser, _context, _page
 
     if _browser is None or not _browser.is_connected():
-        log.info("Запускаю браузер...")
+        log.info("Starting browser...")
         _playwright = await async_playwright().start()
         _browser = await _playwright.chromium.launch(headless=True)
         _context = await _browser.new_context(viewport={"width": 1440, "height": 900})
@@ -362,7 +399,7 @@ async def get_page() -> Page:
     else:
         # Проверяем что сессия не истекла
         if "login" in _page.url.lower():
-            log.info("Сессия истекла, перелогиниваюсь...")
+            log.info("Session expired, re-logging...")
             await do_login()
 
     return _page
@@ -375,10 +412,10 @@ async def do_login():
 
     # Если уже на дашборде — всё хорошо
     if "login" not in _page.url.lower() and "dashboard" in _page.url.lower():
-        log.info("Уже авторизован.")
+        log.info("Already logged in.")
         return
 
-    log.info("Авторизуюсь...")
+    log.info("Logging in...")
     await _page.wait_for_selector("input[type='password']", timeout=10000)
 
     username_input = await _page.query_selector(
@@ -410,19 +447,19 @@ async def do_login():
         pass
 
     await _page.wait_for_timeout(1000)
-    log.info(f"После логина URL: {_page.url}")
+    log.info(f"Post-login URL: {_page.url}")
 
     if "login" in _page.url.lower():
-        raise Exception("Авторизация не удалась — проверь логин и пароль в config.py")
+        raise Exception("Login failed — check credentials in config.py")
 
-    log.info("Авторизация прошла успешно.")
+    log.info("Login successful.")
     alog.set_status("last_login", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 
 async def find_and_open_broker(page: Page, broker_id: str) -> Optional[str]:
     """
     Найти брокера и вернуть его base path (/clients/ID).
-    Возвращает None если брокер не найден.
+    Возвращает None если брокер not found.
     """
     broker_id = str(broker_id).strip()
 
@@ -433,7 +470,7 @@ async def find_and_open_broker(page: Page, broker_id: str) -> Optional[str]:
         await page.goto(test_url, wait_until="domcontentloaded", timeout=60000)
         await page.wait_for_timeout(800)
         current = page.url
-        log.info(f"После перехода URL: {current}")
+        log.info(f"After navigation URL: {current}")
         # Считаем успехом если нас не выкинуло на логин или список
         if "login" not in current and "/clients?" not in current:
             return base
@@ -481,7 +518,7 @@ async def find_and_open_broker(page: Page, broker_id: str) -> Optional[str]:
         prev_count = cur_count
 
     # Собираем все строки таблицы с именем брокера и ссылкой на settings
-    rows = await page.evaluate("""(query) => {
+    rows = await page.evaluate(r"""(query) => {
         const results = [];
         document.querySelectorAll("table tr").forEach(row => {
             const link = row.querySelector("a[href*='/clients/'][href*='/settings']") ||
@@ -508,7 +545,7 @@ async def find_and_open_broker(page: Page, broker_id: str) -> Optional[str]:
         return results;
     }""", broker_id)
 
-    log.info(f"Найдено брокеров по запросу '{broker_id}': {[r['name'] for r in rows]}")
+    log.info(f"Brokers found for query '{broker_id}': {[r['name'] for r in rows]}")
 
     if not rows:
         return None
@@ -518,14 +555,14 @@ async def find_and_open_broker(page: Page, broker_id: str) -> Optional[str]:
     query_lower = broker_id.lower().strip()
     relevant = [r for r in rows if query_lower in r["name"].lower()]
     if not relevant:
-        log.info(f"Ни один результат не содержит '{broker_id}' — брокер не найден")
+        log.info(f"No results contain '{broker_id}' — broker not found")
         return None
     rows = relevant  # работаем только с релевантными
 
     # 1. Точное совпадение имени (без учёта регистра)
     for row in rows:
         if row["name"].lower().strip() == query_lower:
-            log.info(f"Точное совпадение: {row['name']}")
+            log.info(f"Exact match: {row['name']}")
             href = row["href"].replace("/settings", "")
             return href
 
@@ -535,7 +572,7 @@ async def find_and_open_broker(page: Page, broker_id: str) -> Optional[str]:
         # Убираем числовой префикс типа "272 - MN"
         clean = re.sub(r"^\d+\s*-\s*", "", name_lower).strip()
         if clean == query_lower or name_lower == query_lower:
-            log.info(f"Совпадение после очистки префикса: {row['name']}")
+            log.info(f"Match after prefix cleanup: {row['name']}")
             return row["href"].replace("/settings", "")
 
     # 3. Частичное совпадение — предпочитаем CPA, затем кратчайшее имя
@@ -546,21 +583,21 @@ async def find_and_open_broker(page: Page, broker_id: str) -> Optional[str]:
             crg = [r for r in partial if "crg" in r["name"].lower()]
             if crg:
                 best = min(crg, key=lambda r: len(r["name"]))
-                log.info(f"Выбран CRG по запросу: {best['name']}")
+                log.info(f"Selected CRG by query: {best['name']}")
                 return best["href"].replace("/settings", "")
         # Иначе предпочитаем CPA
         cpa = [r for r in partial if "cpa" in r["name"].lower()]
         if cpa:
             best = min(cpa, key=lambda r: len(r["name"]))
-            log.info(f"Предпочтён CPA: {best['name']}")
+            log.info(f"Preferred CPA: {best['name']}")
             return best["href"].replace("/settings", "")
         # Нет ни CPA ни CRG — берём кратчайшее
         best = min(partial, key=lambda r: len(r["name"]))
-        log.info(f"Частичное совпадение (кратчайшее): {best['name']}")
+        log.info(f"Partial match (shortest): {best['name']}")
         return best["href"].replace("/settings", "")
 
     # 4. Первый результат как запасной
-    log.info(f"Берём первый результат: {rows[0]['name']}")
+    log.info(f"Taking first result: {rows[0]['name']}")
     return rows[0]["href"].replace("/settings", "")
 
 
@@ -599,7 +636,7 @@ async def action_change_hours(broker_id: str, start: str, end: str,
 
     base_path = await find_and_open_broker(page, broker_id)
     if not base_path:
-        return f"❌ Брокер «{broker_id}» не найден. Ничего не изменено."
+        return f"❌ Broker '{broker_id}' not found. Nothing changed."
 
     # Переходим напрямую на страницу Opening Hours
     oh_url = f"{CRM_URL.rstrip('/')}{base_path}/opening_hours"
@@ -631,18 +668,18 @@ async def action_change_hours(broker_id: str, start: str, end: str,
         return result
 
     pencils_with_names = await collect_pencils()
-    log.info(f"Найдено кнопок-карандашей: {len(pencils_with_names)}")
+    log.info(f"Pencil buttons found: {len(pencils_with_names)}")
 
     if not pencils_with_names:
-        log.info(f"URL страницы: {page.url}")
-        return "❌ Не найдены кнопки редактирования часов. Ничего не изменено."
+        log.info(f"Page URL: {page.url}")
+        return "❌ Edit buttons not found. Nothing changed."
 
     # Собираем имена стран для обработки (фильтруем заранее)
     countries_to_process = []
     for _, country_name in pencils_with_names:
         if "all" not in countries_filter and country_name:
             if not any(c.lower() in country_name.lower() for c in countries_filter):
-                log.info(f"Пропускаю {country_name} — не в фильтре {countries_filter}")
+                log.info(f"Skipping {country_name} — not in filter {countries_filter}")
                 continue
         countries_to_process.append(country_name)
 
@@ -658,7 +695,7 @@ async def action_change_hours(broker_id: str, start: str, end: str,
                 break
 
         if not target_pencil:
-            results.append(f"⚠️ {country_name}: карандаш не найден после обновления DOM")
+            results.append(f"⚠️ {country_name}: карандаш not found после обновления DOM")
             continue
 
         await target_pencil.click()
@@ -668,7 +705,7 @@ async def action_change_hours(broker_id: str, start: str, end: str,
         try:
             modal = await page.wait_for_selector(".modal-body, [role='dialog']", timeout=4000)
         except Exception:
-            results.append(f"⚠️ {country_name}: модальное окно не открылось")
+            results.append(f"⚠️ {country_name}: modal did not open")
             continue
 
         await page.wait_for_timeout(500)
@@ -713,7 +750,7 @@ async def action_change_hours(broker_id: str, start: str, end: str,
             all_days = ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"]
             days_to_keep = [d.lower() for d in days_filter]
             days_to_disable = [d for d in all_days if d not in days_to_keep]
-            log.info(f"Отключаю дни: {days_to_disable}")
+            log.info(f"Disabling days: {days_to_disable}")
 
             day_checkboxes = await modal.query_selector_all("input[type='checkbox']")
             for cb in day_checkboxes:
@@ -742,25 +779,25 @@ async def action_change_hours(broker_id: str, start: str, end: str,
             save_btn = await page.wait_for_selector("text=SAVE OPENING HOURS", timeout=3000)
             await save_btn.click()
             await page.wait_for_timeout(700)
-            results.append(f"✅ {country_name}: {start}–{end} сохранено")
+            results.append(f"✅ {country_name}: {start}–{end} saved")
         except Exception:
             await _close_modal(page)
-            results.append(f"⚠️ {country_name}: кнопка Save не найдена")
+            results.append(f"⚠️ {country_name}: Save button not found")
 
-    return "\n".join(results) if results else "⚠️ Нет строк для изменения."
+    return "\n".join(results) if results else "⚠️ No rows to change."
 
 
 async def action_edit_country_add_days(broker_id: str, country: str, start: str, end: str,
                                         no_traffic: bool, days_to_add: list) -> str:
     """
     Редактировать существующую запись страны: добавить галочки на нужные дни
-    и выставить часы — не трогая уже включённые дни.
+    и выставить часы — не трогая already activeные дни.
     """
     page = await get_page()
 
     base_path = await find_and_open_broker(page, broker_id)
     if not base_path:
-        return f"❌ Брокер «{broker_id}» не найден. Ничего не изменено."
+        return f"❌ Broker '{broker_id}' not found. Nothing changed."
 
     oh_url = f"{CRM_URL.rstrip('/')}{base_path}/opening_hours"
     await page.goto(oh_url, wait_until="domcontentloaded", timeout=60000)
@@ -785,7 +822,7 @@ async def action_edit_country_add_days(broker_id: str, country: str, start: str,
             break
 
     if not target_pencil:
-        return f"❌ Страна «{country}» не найдена у брокера. Ничего не изменено."
+        return f"❌ Country '{country}' not found for this broker. Nothing changed."
 
     await target_pencil.click()
     await page.wait_for_timeout(600)
@@ -793,12 +830,12 @@ async def action_edit_country_add_days(broker_id: str, country: str, start: str,
     try:
         modal = await page.wait_for_selector(".modal-body, [role='dialog']", timeout=4000)
     except Exception:
-        return f"❌ {country}: модальное окно не открылось."
+        return f"❌ {country}: modal did not open."
 
     await page.wait_for_timeout(400)
 
     days_lower = [d.lower() for d in days_to_add]
-    log.info(f"Добавляю дни {days_lower} к {country}")
+    log.info(f"Adding days {days_lower} to {country}")
 
     sh, sm = (start.split(":") + ["00"])[:2]
     eh, em = (end.split(":") + ["00"])[:2]
@@ -824,7 +861,7 @@ async def action_edit_country_add_days(broker_id: str, country: str, start: str,
         if matched_day is None:
             continue  # Этот день нас не касается — не трогаем
 
-        # Включаем день если не включён
+        # Включаем день если не enabled
         if not await cb.is_checked():
             await cb.evaluate("el => el.click()")
             await page.wait_for_timeout(100)
@@ -837,7 +874,7 @@ async def action_edit_country_add_days(broker_id: str, country: str, start: str,
             const inputs = row.querySelectorAll('input.timepicker-input, input[class*="timepicker"]');
             return Array.from(inputs).map(i => i.className);
         }}""")
-        log.info(f"  День {matched_day}: timepickers в строке = {row_time_inputs}")
+        log.info(f"  Day {matched_day}: timepickers in row = {row_time_inputs}")
 
         # Устанавливаем время только для этой строки
         await cb.evaluate(f"""el => {{
@@ -870,24 +907,24 @@ async def action_edit_country_add_days(broker_id: str, country: str, start: str,
         save_btn = await page.wait_for_selector("text=SAVE OPENING HOURS", timeout=3000)
         await save_btn.click()
         await page.wait_for_timeout(700)
-        return f"✅ {country}: добавлены дни {', '.join(enabled)} с часами {start}–{end}"
+        return f"✅ {country}: days added: {', '.join(enabled)} with hours {start}–{end}"
     except Exception:
         await _close_modal(page)
-        return f"⚠️ {country}: кнопка Save не найдена."
+        return f"⚠️ {country}: Save button not found."
 
 
 async def action_add_country_hours_multi(broker_id: str, country: str,
                                          schedule_groups: list, no_traffic: bool,
                                          country_exists: bool = False) -> str:
     """
-    Добавить/обновить часы для страны с несколькими группами дней за один проход модалки.
+    Добавить/обновить hours for страны с несколькими группами дней за один проход модалки.
     schedule_groups: [{"days": [...], "start": "10:00", "end": "19:00"}, ...]
     """
     page = await get_page()
 
     base_path = await find_and_open_broker(page, broker_id)
     if not base_path:
-        return f"❌ Брокер «{broker_id}» не найден."
+        return f"❌ Broker '{broker_id}' not found."
 
     oh_url = f"{CRM_URL.rstrip('/')}{base_path}/opening_hours"
     await page.goto(oh_url, wait_until="domcontentloaded", timeout=60000)
@@ -909,7 +946,7 @@ async def action_add_country_hours_multi(broker_id: str, country: str,
                 target = btn
                 break
         if not target:
-            return f"❌ Страна «{country}» не найдена."
+            return f"❌ Country '{country}' not found."
         await target.click()
     else:
         # Добавляем новую запись
@@ -919,13 +956,13 @@ async def action_add_country_hours_multi(broker_id: str, country: str,
             )
             await add_btn.click()
         except Exception:
-            return "❌ Не найдена кнопка ADD OPENING HOURS."
+            return "❌ ADD OPENING HOURS button not found."
 
     await page.wait_for_timeout(800)
     try:
         modal = await page.wait_for_selector(".modal-body, [role='dialog']", timeout=5000)
     except Exception:
-        return "❌ Модальное окно не открылось."
+        return "❌ Modal did not open."
     await page.wait_for_timeout(500)
 
     # Выбираем страну (только для новой записи)
@@ -955,15 +992,15 @@ async def action_add_country_hours_multi(broker_id: str, country: str,
                     break
             if not found:
                 await _close_modal(page)
-                return f"❌ Страна «{country}» не найдена в списке."
+                return f"❌ Country '{country}' not found in list."
         except Exception as e:
-            return f"❌ Ошибка при выборе страны: {e}"
+            return f"❌ Error selecting country: {e}"
 
         # Переполучаем modal после выбора страны
         await page.wait_for_timeout(600)
         modal = await page.query_selector(".modal-body, [role='dialog']")
         if not modal:
-            return "❌ Модальное окно закрылось после выбора страны."
+            return "❌ Modal closed after country selection."
 
     # Собираем все дни со всех групп
     all_days_in_groups = set()
@@ -979,7 +1016,7 @@ async def action_add_country_hours_multi(broker_id: str, country: str,
         for d in g.get("days", []):
             day_to_time[d.lower()] = (g["start"], g["end"])
 
-    log.info(f"schedule_groups для {country}: {day_to_time}")
+    log.info(f"schedule_groups for {country}: {day_to_time}")
 
     # Обрабатываем каждый чекбокс дня
     checkboxes = await modal.query_selector_all("input[type='checkbox']")
@@ -1046,11 +1083,11 @@ async def action_add_country_hours_multi(broker_id: str, country: str,
         await save_btn.click()
         await page.wait_for_timeout(700)
         groups_str = ", ".join(f"{g['start']}–{g['end']} ({'/'.join(g['days'])})" for g in schedule_groups)
-        action_word = "Обновлены" if country_exists else "Добавлены"
-        return f"✅ {action_word} часы для {country}: {groups_str}"
+        action_word = "Updated" if country_exists else "Added"
+        return f"✅ {action_word} hours for {country}: {groups_str}"
     except Exception:
         await _close_modal(page)
-        return f"⚠️ {country}: кнопка Save не найдена."
+        return f"⚠️ {country}: Save button not found."
 
 
 async def action_add_country_hours(broker_id: str, country: str, start: str, end: str,
@@ -1060,10 +1097,10 @@ async def action_add_country_hours(broker_id: str, country: str, start: str, end
 
     base_path = await find_and_open_broker(page, broker_id)
     if not base_path:
-        return f"❌ Брокер «{broker_id}» не найден. Ничего не изменено."
+        return f"❌ Broker '{broker_id}' not found. Nothing changed."
 
     oh_url = f"{CRM_URL.rstrip('/')}{base_path}/opening_hours"
-    log.info(f"Открываю: {oh_url}")
+    log.info(f"Opening: {oh_url}")
     await page.goto(oh_url, wait_until="domcontentloaded", timeout=60000)
 
     # Ждём пока Vue отрендерит кнопку ADD OPENING HOURS
@@ -1072,20 +1109,20 @@ async def action_add_country_hours(broker_id: str, country: str, start: str, end
             "button:has-text('ADD OPENING HOURS'), a:has-text('ADD OPENING HOURS'), .btn:has-text('ADD')",
             timeout=12000
         )
-        log.info("Кнопка ADD OPENING HOURS найдена, кликаю...")
+        log.info("ADD OPENING HOURS found, clicking...")
         await add_btn.click()
         await page.wait_for_timeout(800)
     except Exception as e:
-        log.info(f"ADD OPENING HOURS не найдена: {e}")
-        return "❌ Не найдена кнопка ADD OPENING HOURS. Ничего не изменено."
+        log.info(f"ADD OPENING HOURS not found: {e}")
+        return "❌ ADD OPENING HOURS button not found. Nothing changed."
 
-    log.info("Жду модальное окно...")
+    log.info("Waiting for modal...")
 
     # Ждём модальное окно
     try:
         modal = await page.wait_for_selector(".modal-body, [role='dialog']", timeout=5000)
     except Exception:
-        return "❌ Модальное окно не открылось. Ничего не изменено."
+        return "❌ Modal did not open. Nothing changed."
 
     await page.wait_for_timeout(500)
 
@@ -1100,7 +1137,7 @@ async def action_add_country_hours(broker_id: str, country: str, start: str, end
         if dropdown_toggle:
             await dropdown_toggle.click()
             await page.wait_for_timeout(600)
-            log.info("Кликнул по smart__dropdown")
+            log.info("Clicked smart__dropdown")
 
         # Ищем поле поиска — у него id заканчивается на __search-input
         search_input = await page.query_selector("input[id*='search-input']")
@@ -1113,7 +1150,7 @@ async def action_add_country_hours(broker_id: str, country: str, start: str, end
                 "[class*='dropdown__menu'] input, "
                 "[class*='dropdown-content-header'] input"
             )
-        log.info(f"Search input найден: {search_input is not None}")
+        log.info(f"Search input found: {search_input is not None}")
 
         if search_input:
             await search_input.click()
@@ -1125,41 +1162,41 @@ async def action_add_country_hours(broker_id: str, country: str, start: str, end
                 items_count = await page.evaluate("() => document.querySelectorAll('li.dropdown-item').length")
                 if items_count < 10:
                     break
-            log.info(f"Введено: '{country}', элементов в списке: {items_count}")
+            log.info(f"Entered: '{country}', elements in list: {items_count}")
         else:
-            log.info("Поле поиска не найдено!")
+            log.info("Search field not found!")
 
         # Ждём dropdown-item
         try:
             await page.wait_for_selector("li.dropdown-item", timeout=5000)
         except Exception:
-            log.info("dropdown-item не появился")
+            log.info("dropdown-item did not appear")
 
         found = False
         items = await page.query_selector_all("li.dropdown-item")
-        log.info(f"Элементов после поиска: {len(items)}")
+        log.info(f"Elements after search: {len(items)}")
         for item in items:
             txt = (await item.inner_text()).strip()
             log.info(f"  '{txt}'")
             if country.lower() in txt.lower():
                 await item.click()
                 found = True
-                log.info(f"Выбрано: {country}")
+                log.info(f"Selected: {country}")
                 await page.wait_for_timeout(400)
                 break
 
         if not found:
-            return f"❌ Страна «{country}» не найдена в списке. Ничего не изменено."
+            return f"❌ Country '{country}' not found in list. Nothing changed."
 
     except Exception as e:
-        return f"❌ Ошибка при выборе страны: {e}"
+        return f"❌ Error selecting country: {e}"
 
     # Vue перерендеривает модалку после выбора страны — переполучаем её
     await page.wait_for_timeout(600)
     modal = await page.query_selector(".modal-body, [role='dialog']")
     if not modal:
-        return "❌ Модальное окно закрылось после выбора страны."
-    log.info("Модалка переполучена после выбора страны")
+        return "❌ Modal closed after country selection."
+    log.info("Modal re-fetched after country selection")
 
     # ── Парсим время ──────────────────────────
     sh, sm = (start.split(":") + ["00"])[:2]
@@ -1175,7 +1212,7 @@ async def action_add_country_hours(broker_id: str, country: str, start: str, end
         inp_cls  = await inp.get_attribute("class") or ""
         if "timepicker" in inp_cls and inp_type == "text":
             time_inputs.append(inp)
-    log.info(f"Timepicker inputs найдено: {len(time_inputs)}")
+    log.info(f"Timepicker inputs found: {len(time_inputs)}")
 
     async def set_timepicker(inp, val):
         """Установить значение timepicker так чтобы Vue увидел изменение."""
@@ -1230,9 +1267,9 @@ async def action_add_country_hours(broker_id: str, country: str, start: str, end
         save_btn = await page.wait_for_selector("text=SAVE OPENING HOURS", timeout=3000)
         await save_btn.click()
         await page.wait_for_timeout(700)
-        return f"✅ Добавлены часы для {country}: {start}–{end}"
+        return f"✅ Hours added for {country}: {start}–{end}"
     except Exception:
-        return "⚠️ Не найдена кнопка Save. Возможно данные не сохранились."
+        return "⚠️ Save button not found. Data may not have been saved."
 
 
 async def action_get_broker_revenue(broker_id: str, countries: list) -> str:
@@ -1241,7 +1278,7 @@ async def action_get_broker_revenue(broker_id: str, countries: list) -> str:
 
     base_path = await find_and_open_broker(page, broker_id)
     if not base_path:
-        return f"❌ Брокер «{broker_id}» не найден."
+        return f"❌ Broker '{broker_id}' not found."
 
     rev_url = f"{CRM_URL.rstrip('/')}{base_path}/revenues"
     await page.goto(rev_url, wait_until="domcontentloaded", timeout=60000)
@@ -1268,10 +1305,10 @@ async def action_get_broker_revenue(broker_id: str, countries: list) -> str:
         });
         return result;
     }""")
-    log.info(f"Прайсы брокера {broker_id}: {table_data}")
+    log.info(f"Broker prices {broker_id}: {table_data}")
 
     if not table_data:
-        return f"❌ У брокера {broker_id} нет прайсов."
+        return f"❌ Broker {broker_id} has no prices."
 
     results = []
     for country in countries:
@@ -1283,7 +1320,7 @@ async def action_get_broker_revenue(broker_id: str, countries: list) -> str:
         if found:
             results.append(f"✅ {found['country']}: {found['amount']}")
         else:
-            results.append(f"❌ {country}: прайс не найден")
+            results.append(f"❌ {country}: прайс not found")
 
     return "\n".join(results)
 
@@ -1294,7 +1331,7 @@ async def action_get_hours(broker_id: str, countries: list) -> str:
 
     base_path = await find_and_open_broker(page, broker_id)
     if not base_path:
-        return f"❌ Брокер «{broker_id}» не найден."
+        return f"❌ Broker '{broker_id}' not found."
 
     oh_url = f"{CRM_URL.rstrip('/')}{base_path}/opening_hours"
     await page.goto(oh_url, wait_until="domcontentloaded", timeout=60000)
@@ -1347,10 +1384,10 @@ async def action_get_hours(broker_id: str, countries: list) -> str:
 
         return result;
     }""")
-    log.info(f"Часы брокера {broker_id}: {len(hours_data)} стран найдено")
+    log.info(f"Broker hours {broker_id}: {len(hours_data)} countries found")
 
     if not hours_data:
-        return f"❌ У брокера {broker_id} нет расписания."
+        return f"❌ Broker {broker_id} has no schedule."
 
     # Фильтруем по запрошенным странам
     results = []
@@ -1364,7 +1401,7 @@ async def action_get_hours(broker_id: str, countries: list) -> str:
             if not any(c.lower() in country_name.lower() for c in countries):
                 continue
 
-        # Группируем одинаковые часы для компактного вывода
+        # Группируем одинаковые hours for компактного вывода
         # Например: Mon-Fri 11:00-18:00, Sat-Sun closed
         groups = []
         current_time = None
@@ -1399,7 +1436,7 @@ async def action_get_hours(broker_id: str, countries: list) -> str:
 
     if not results:
         missing = ", ".join(countries)
-        return f"❌ Страны ({missing}) не найдены у брокера."
+        return f"❌ Countries ({missing}) not found for this broker."
 
     return "\n".join(results)
 
@@ -1412,7 +1449,7 @@ async def action_get_affiliate_revenue(affiliate_id: str, countries: list) -> st
     if affiliate_id.isdigit():
         aff_base = f"/sources/{affiliate_id}"
     else:
-        return f"❌ Укажи числовой ID аффилиата."
+        return f"❌ Please provide numeric affiliate ID."
 
     payouts_url = f"{CRM_URL.rstrip('/')}{aff_base}/payouts"
     await page.goto(payouts_url, wait_until="domcontentloaded", timeout=60000)
@@ -1438,7 +1475,7 @@ async def action_get_affiliate_revenue(affiliate_id: str, countries: list) -> st
             return Array.from(tds).map(td => td.innerText.trim());
         });
     }""")
-    log.info(f"Сырые строки таблицы аффилиата: {raw_rows}")
+    log.info(f"Raw affiliate table rows: {raw_rows}")
 
     table_data = await page.evaluate("""() => {
         const result = [];
@@ -1454,10 +1491,10 @@ async def action_get_affiliate_revenue(affiliate_id: str, countries: list) -> st
         });
         return result;
     }""")
-    log.info(f"Прайсы аффилиата {affiliate_id}: {table_data}")
+    log.info(f"Affiliate prices {affiliate_id}: {table_data}")
 
     if not table_data:
-        return f"❌ У аффилиата {affiliate_id} нет прайсов."
+        return f"❌ Affiliate {affiliate_id} has no prices."
 
     results = []
     for country in countries:
@@ -1469,7 +1506,7 @@ async def action_get_affiliate_revenue(affiliate_id: str, countries: list) -> st
         if found:
             results.append(f"✅ {found['country']}: {found['amount']}")
         else:
-            results.append(f"❌ {country}: прайс не найден")
+            results.append(f"❌ {country}: прайс not found")
 
     return "\n".join(results)
 
@@ -1486,8 +1523,8 @@ async def action_add_affiliate_revenue(affiliate_id: str, country: str, amount: 
         await page.goto(test_url, wait_until="domcontentloaded", timeout=60000)
         await page.wait_for_timeout(800)
         if "login" in page.url.lower() or "/sources?" in page.url:
-            return f"❌ Аффилиат «{affiliate_id}» не найден."
-        log.info(f"Аффилиат найден напрямую: {aff_base}")
+            return f"❌ Affiliate '{affiliate_id}' not found."
+        log.info(f"Affiliate found directly: {aff_base}")
     else:
         # Поиск по имени
         aff_url = f"{CRM_URL.rstrip('/')}/sources?search="
@@ -1500,10 +1537,10 @@ async def action_add_affiliate_revenue(affiliate_id: str, country: str, amount: 
             await page.wait_for_timeout(1500)
         settings_link = await page.query_selector("a[href*='/sources/'][href*='/settings']")
         if not settings_link:
-            return f"❌ Аффилиат «{affiliate_id}» не найден."
+            return f"❌ Affiliate '{affiliate_id}' not found."
         href = await settings_link.get_attribute("href")
         aff_base = href.replace("/settings", "")
-        log.info(f"Аффилиат найден по имени: {aff_base}")
+        log.info(f"Affiliate found by name: {aff_base}")
 
     # Переходим на FTDs Payout (всегда заново)
     payouts_url = f"{CRM_URL.rstrip('/')}{aff_base}/payouts"
@@ -1526,7 +1563,7 @@ async def action_add_affiliate_revenue(affiliate_id: str, country: str, amount: 
                     amount_td = await row.query_selector("td:nth-child(6), td:nth-child(5)")
                     old_amount = (await amount_td.inner_text()).strip() if amount_td else "?"
                     old_amount = old_amount.replace("$", "").strip()
-                    log.info(f"Запись для {country} уже существует (${old_amount}) — редактирую")
+                    log.info(f"Entry for {country} already exists (${old_amount}) — editing")
                     break
 
     if existing_pencil:
@@ -1536,7 +1573,7 @@ async def action_add_affiliate_revenue(affiliate_id: str, country: str, amount: 
         try:
             modal = await page.wait_for_selector(".modal-body, [role='dialog']", timeout=5000)
         except Exception:
-            return "❌ Модальное окно не открылось."
+            return "❌ Modal did not open."
         await page.wait_for_timeout(400)
 
         amount_input = await modal.query_selector("input[type='text'].form-control")
@@ -1553,9 +1590,9 @@ async def action_add_affiliate_revenue(affiliate_id: str, country: str, amount: 
             await amount_input.click(click_count=3)
             await amount_input.type(str(amount))
             await page.wait_for_timeout(300)
-            log.info(f"Обновлена сумма: {amount}")
+            log.info(f"Amount updated: {amount}")
         else:
-            return "❌ Поле Amount не найдено."
+            return "❌ Amount field not found."
 
         await page.wait_for_timeout(400)
         try:
@@ -1565,12 +1602,12 @@ async def action_add_affiliate_revenue(affiliate_id: str, country: str, amount: 
             )
             await save_btn.click()
             await page.wait_for_timeout(1000)
-            country_label = country if country.lower() != "all" else "все страны"
-            log.info(f"Прайс обновлён для {country_label}: ${old_amount} → ${amount}")
+            country_label = country if country.lower() != "all" else "all countries"
+            log.info(f"Price updated for {country_label}: ${old_amount} → ${amount}")
             return f"✅ {country_label}: ${old_amount} → ${amount}"
         except Exception as e:
             await _close_modal(page)
-            return "⚠️ Не найдена кнопка Save."
+            return "⚠️ Save button not found."
 
     # Записи нет — добавляем новую
     try:
@@ -1580,14 +1617,14 @@ async def action_add_affiliate_revenue(affiliate_id: str, country: str, amount: 
         )
         await add_btn.click()
         await page.wait_for_timeout(800)
-        log.info("Кнопка ADD PAYOUT нажата")
+        log.info("ADD PAYOUT clicked")
     except Exception:
-        return "❌ Не найдена кнопка ADD PAYOUT."
+        return "❌ ADD PAYOUT button not found."
 
     try:
         modal = await page.wait_for_selector(".modal-body, [role='dialog']", timeout=5000)
     except Exception:
-        return "❌ Модальное окно не открылось."
+        return "❌ Modal did not open."
     await page.wait_for_timeout(500)
 
     # Выбираем страну
@@ -1611,7 +1648,7 @@ async def action_add_affiliate_revenue(affiliate_id: str, country: str, amount: 
                 cnt = await page.evaluate("() => document.querySelectorAll('li.dropdown-item, .dropdown-item').length")
                 if cnt < 10:
                     break
-            log.info(f"Введено в поиск: '{country}'")
+            log.info(f"Searched for: '{country}'")
 
         try:
             await page.wait_for_selector("li.dropdown-item, .dropdown-item", timeout=5000)
@@ -1619,25 +1656,25 @@ async def action_add_affiliate_revenue(affiliate_id: str, country: str, amount: 
             pass
 
         items = await page.query_selector_all("li.dropdown-item, .dropdown-item")
-        log.info(f"Элементов в дропдауне: {len(items)}")
+        log.info(f"Dropdown elements: {len(items)}")
         found = False
         for item in items:
             txt = (await item.inner_text()).strip()
             if country.lower() in txt.lower():
                 await item.click()
                 found = True
-                log.info(f"Страна {country} выбрана!")
+                log.info(f"Country {country} выбрана!")
                 await page.wait_for_timeout(400)
                 break
 
         if not found:
             await _close_modal(page)
-            return f"❌ Страна «{country}» не найдена. Ничего не изменено."
+            return f"❌ Country '{country}' not found. Nothing changed."
 
     await page.wait_for_timeout(500)
     modal = await page.query_selector(".modal-body, [role='dialog']")
     if not modal:
-        return "❌ Модальное окно закрылось после выбора страны."
+        return "❌ Modal closed after country selection."
 
     amount_input = await modal.query_selector("input[type='text'].form-control, input[type='number'], input[placeholder*='amount' i]")
     if not amount_input:
@@ -1653,9 +1690,9 @@ async def action_add_affiliate_revenue(affiliate_id: str, country: str, amount: 
         await amount_input.click(click_count=3)
         await amount_input.type(str(amount))
         await page.wait_for_timeout(300)
-        log.info(f"Введена сумма: {amount}")
+        log.info(f"Amount entered: {amount}")
     else:
-        return "❌ Поле Amount не найдено."
+        return "❌ Amount field not found."
 
     await page.wait_for_timeout(400)
     try:
@@ -1663,16 +1700,16 @@ async def action_add_affiliate_revenue(affiliate_id: str, country: str, amount: 
             ".modal button[type='submit'], .modal-footer button[type='submit'], .modal .btn-ladda",
             timeout=5000
         )
-        log.info("Кнопка Save найдена, кликаю...")
+        log.info("Save button found, clicking...")
         await save_btn.click()
         await page.wait_for_timeout(1000)
-        country_label = country if country.lower() != "all" else "все страны"
-        log.info(f"Прайс аффилиата сохранён для {country_label}: ${amount}")
-        return f"✅ Прайс добавлен для {country_label}: ${amount}"
+        country_label = country if country.lower() != "all" else "all countries"
+        log.info(f"Affiliate price saved for {country_label}: ${amount}")
+        return f"✅ Price added for {country_label}: ${amount}"
     except Exception as e:
-        log.error(f"Кнопка Save не найдена: {e}")
+        log.error(f"Кнопка Save not foundа: {e}")
         await _close_modal(page)
-        return "⚠️ Не найдена кнопка Save."
+        return "⚠️ Save button not found."
 
 
 async def action_add_revenue(broker_id: str, country: str, amount: str) -> str:
@@ -1681,7 +1718,7 @@ async def action_add_revenue(broker_id: str, country: str, amount: str) -> str:
 
     base_path = await find_and_open_broker(page, broker_id)
     if not base_path:
-        return f"❌ Брокер «{broker_id}» не найден. Ничего не изменено."
+        return f"❌ Broker '{broker_id}' not found. Nothing changed."
 
     # Переходим на страницу FTDs Revenue
     rev_url = f"{CRM_URL.rstrip('/')}{base_path}/revenues"
@@ -1709,7 +1746,7 @@ async def action_add_revenue(broker_id: str, country: str, amount: str) -> str:
                     old_amount = (await amount_td.inner_text()).strip().replace("$", "").strip()
                 existing_pencil = await row.query_selector("a.btn-primary, button.btn-primary:not(.btn-danger)")
                 if existing_pencil:
-                    log.info(f"Запись для {country} уже существует (${old_amount}) — редактирую")
+                    log.info(f"Entry for {country} already exists (${old_amount}) — editing")
                     break
 
     if existing_pencil:
@@ -1718,7 +1755,7 @@ async def action_add_revenue(broker_id: str, country: str, amount: str) -> str:
         try:
             modal = await page.wait_for_selector(".modal-body, [role='dialog']", timeout=5000)
         except Exception:
-            return "❌ Модальное окно не открылось."
+            return "❌ Modal did not open."
         await page.wait_for_timeout(400)
 
         # Vue перерендеривает — переполучаем modal
@@ -1740,7 +1777,7 @@ async def action_add_revenue(broker_id: str, country: str, amount: str) -> str:
             await amount_input.type(str(amount))
             await page.wait_for_timeout(300)
         else:
-            return "❌ Поле Amount не найдено."
+            return "❌ Amount field not found."
 
         await page.wait_for_timeout(400)
         try:
@@ -1750,13 +1787,13 @@ async def action_add_revenue(broker_id: str, country: str, amount: str) -> str:
             )
             await save_btn.click()
             await page.wait_for_timeout(1000)
-            country_label = country if country.lower() != "all" else "все страны"
+            country_label = country if country.lower() != "all" else "all countries"
             if old_amount:
                 return f"✅ {country_label}: ${old_amount} → ${amount}"
-            return f"✅ Прайс обновлён для {country_label}: ${amount}"
+            return f"✅ Price updated for {country_label}: ${amount}"
         except Exception:
             await _close_modal(page)
-            return "⚠️ Не найдена кнопка Save."
+            return "⚠️ Save button not found."
 
     # Записи нет — добавляем новую
     # Нажимаем ADD REVENUE или ADD THE FIRST REVENUE
@@ -1767,15 +1804,15 @@ async def action_add_revenue(broker_id: str, country: str, amount: str) -> str:
         )
         await add_btn.click()
         await page.wait_for_timeout(800)
-        log.info("Кнопка ADD REVENUE нажата")
+        log.info("ADD REVENUE clicked")
     except Exception:
-        return "❌ Не найдена кнопка ADD REVENUE. Ничего не изменено."
+        return "❌ ADD REVENUE button not found. Nothing changed."
 
     # Ждём модалку
     try:
         modal = await page.wait_for_selector(".modal-body, [role='dialog']", timeout=5000)
     except Exception:
-        return "❌ Модальное окно не открылось."
+        return "❌ Modal did not open."
 
     await page.wait_for_timeout(500)
 
@@ -1787,7 +1824,7 @@ async def action_add_revenue(broker_id: str, country: str, amount: str) -> str:
         if dropdown_toggle:
             await dropdown_toggle.click()
             await page.wait_for_timeout(600)
-            log.info("Кликнул по dropdown")
+            log.info("Clicked dropdown")
 
         search_input = await page.query_selector("input[id*='search-input']")
         if not search_input:
@@ -1802,9 +1839,9 @@ async def action_add_revenue(broker_id: str, country: str, amount: str) -> str:
                 items_count = await page.evaluate("() => document.querySelectorAll('li.dropdown-item').length")
                 if items_count < 10:
                     break
-            log.info(f"Введено в поиск: '{country}', элементов: {items_count}")
+            log.info(f"Searched for: '{country}', elements: {items_count}")
         else:
-            log.info("Поле поиска страны не найдено!")
+            log.info("Поле поиска страны not foundо!")
 
         try:
             await page.wait_for_selector("li.dropdown-item", timeout=5000)
@@ -1812,7 +1849,7 @@ async def action_add_revenue(broker_id: str, country: str, amount: str) -> str:
             pass
 
         items = await page.query_selector_all("li.dropdown-item")
-        log.info(f"Элементов в дропдауне: {len(items)}")
+        log.info(f"Dropdown elements: {len(items)}")
         found = False
         for item in items:
             txt = (await item.inner_text()).strip()
@@ -1820,12 +1857,12 @@ async def action_add_revenue(broker_id: str, country: str, amount: str) -> str:
             if country.lower() in txt.lower():
                 await item.click()
                 found = True
-                log.info(f"Страна {country} выбрана!")
+                log.info(f"Country {country} выбрана!")
                 await page.wait_for_timeout(400)
                 break
 
         if not found:
-            return f"❌ Страна «{country}» не найдена. Ничего не изменено."
+            return f"❌ Country '{country}' not found. Nothing changed."
 
     # ── Вводим сумму ──────────────────────────
     # Закрываем дропдаун если открыт — кликаем в безопасное место
@@ -1850,9 +1887,9 @@ async def action_add_revenue(broker_id: str, country: str, amount: str) -> str:
         await amount_input.click()
         await amount_input.fill(str(amount))
         await page.wait_for_timeout(300)
-        log.info(f"Введена сумма: {amount}")
+        log.info(f"Amount entered: {amount}")
     else:
-        return "❌ Поле Amount не найдено."
+        return "❌ Amount field not found."
 
     # ── Сохраняем ─────────────────────────────
     # Даём Vue время обработать ввод суммы
@@ -1864,23 +1901,23 @@ async def action_add_revenue(broker_id: str, country: str, amount: str) -> str:
             "[role='dialog'] button[type='submit'], .modal .btn-ladda",
             timeout=5000
         )
-        log.info("Кнопка Save найдена, кликаю...")
+        log.info("Save button found, clicking...")
         await save_btn.click()
         await page.wait_for_timeout(1000)
-        country_label = country if country.lower() != "all" else "все страны"
-        log.info(f"Прайс сохранён для {country_label}: ${amount}")
-        return f"✅ Прайс добавлен для {country_label}: ${amount}"
+        country_label = country if country.lower() != "all" else "all countries"
+        log.info(f"Price saved for {country_label}: ${amount}")
+        return f"✅ Price added for {country_label}: ${amount}"
     except Exception as e:
-        log.error(f"Кнопка Save не найдена: {e}")
+        log.error(f"Кнопка Save not foundа: {e}")
         # Логируем все кнопки в модалке для диагностики
         btns = await page.evaluate("""() => {
             const modal = document.querySelector('.modal, [role=dialog]');
             if (!modal) return [];
             return Array.from(modal.querySelectorAll('button')).map(b => b.innerText.trim());
         }""")
-        log.info(f"Кнопки в модалке: {btns}")
+        log.info(f"Buttons in modal: {btns}")
         await _close_modal(page)
-        return "⚠️ Не найдена кнопка Save."
+        return "⚠️ Save button not found."
 
 
 async def _close_modal(page) -> None:
@@ -1906,7 +1943,7 @@ async def _close_days_for_pencil(page, pencil, country_name: str, days_to_close:
     try:
         modal = await page.wait_for_selector(".modal-body, [role='dialog']", timeout=4000)
     except Exception:
-        return f"❌ {country_name}: модальное окно не открылось."
+        return f"❌ {country_name}: modal did not open."
 
     await page.wait_for_timeout(300)
 
@@ -1928,16 +1965,16 @@ async def _close_days_for_pencil(page, pencil, country_name: str, days_to_close:
     if not closed:
         # Дни уже закрыты — просто закрываем модалку без сохранения
         await _close_modal(page)
-        return f"⚠️ {country_name}: дни {days_to_close} уже закрыты или не найдены."
+        return f"⚠️ {country_name}: days {days_to_close} already closed or not found."
 
     try:
         save_btn = await page.wait_for_selector("text=SAVE OPENING HOURS", timeout=3000)
         await save_btn.click()
         await page.wait_for_timeout(700)
-        return f"✅ {country_name}: закрыты дни {', '.join(closed)}."
+        return f"✅ {country_name}: days closed: {', '.join(closed)}."
     except Exception:
         await _close_modal(page)
-        return f"⚠️ {country_name}: кнопка Save не найдена."
+        return f"⚠️ {country_name}: Save button not found."
 
 
 async def action_close_days(broker_id: str, country: str, days_to_close: list) -> str:
@@ -1946,7 +1983,7 @@ async def action_close_days(broker_id: str, country: str, days_to_close: list) -
 
     base_path = await find_and_open_broker(page, broker_id)
     if not base_path:
-        return f"❌ Брокер «{broker_id}» не найден. Ничего не изменено."
+        return f"❌ Broker '{broker_id}' not found. Nothing changed."
 
     oh_url = f"{CRM_URL.rstrip('/')}{base_path}/opening_hours"
     await page.goto(oh_url, wait_until="domcontentloaded", timeout=60000)
@@ -1976,10 +2013,10 @@ async def action_close_days(broker_id: str, country: str, days_to_close: list) -
 
     log.info(f"Найдено стран: {[n for _, n in pencil_buttons]}")
 
-    # Режим "все страны"
+    # Режим "all countries"
     if country.lower() == "all":
         if not pencil_buttons:
-            return "❌ Страны не найдены у брокера."
+            return "❌ Countries not found for this broker."
         results = []
         for pencil, c_name in pencil_buttons:
             # После сохранения модалки страница перерендеривается — нужно заново найти карандаш
@@ -2002,7 +2039,7 @@ async def action_close_days(broker_id: str, country: str, days_to_close: list) -
                     break
 
             if not target:
-                results.append(f"⚠️ {c_name}: карандаш не найден после обновления.")
+                results.append(f"⚠️ {c_name}: карандаш not found после обновления.")
                 continue
 
             msg = await _close_days_for_pencil(page, target, c_name, days_to_close)
@@ -2021,7 +2058,7 @@ async def action_close_days(broker_id: str, country: str, days_to_close: list) -
             break
 
     if not target_pencil:
-        return f"❌ Страна «{country}» не найдена у брокера. Ничего не изменено."
+        return f"❌ Country '{country}' not found for this broker. Nothing changed."
 
     return await _close_days_for_pencil(page, target_pencil, target_name, days_to_close)
 
@@ -2032,7 +2069,7 @@ async def action_toggle_broker(broker_id: str, activate: bool) -> str:
 
     base_path = await find_and_open_broker(page, broker_id)
     if not base_path:
-        return f"❌ Брокер «{broker_id}» не найден. Ничего не изменено."
+        return f"❌ Broker '{broker_id}' not found. Nothing changed."
 
     # Переходим напрямую на страницу Settings
     settings_url = f"{CRM_URL.rstrip('/')}{base_path}/settings"
@@ -2050,19 +2087,262 @@ async def action_toggle_broker(broker_id: str, activate: bool) -> str:
         elif not activate and is_checked:
             await toggle.uncheck()
         else:
-            state = "уже включён" if activate else "уже выключен"
-            return f"ℹ️ Брокер «{broker_id}» {state}. Ничего не изменено."
+            state = "already active" if activate else "already inactive"
+            return f"ℹ️ Broker '{broker_id}' {state}. Nothing changed."
 
         # Сохраняем
         save = await page.wait_for_selector("text=SAVE SETTINGS", timeout=4000)
         await save.click()
         await page.wait_for_timeout(500)
 
-        action_word = "включён" if activate else "выключен"
-        return f"✅ Брокер «{broker_id}» успешно {action_word}."
+        action_word = "enabled" if activate else "disabled"
+        return f"✅ Broker '{broker_id}' successfully {action_word}."
 
     except Exception as e:
-        return f"❌ Не могу изменить статус брокера: {e}\nНичего не изменено."
+        return f"❌ Cannot change broker status: {e}\nNothing changed."
+
+
+async def action_change_caps(broker_id: str, country: str, cap_value: int) -> str:
+    """Изменить или создать cap для страны брокера."""
+    page = await get_page()
+
+    base_path = await find_and_open_broker(page, broker_id)
+    if not base_path:
+        return f"❌ Broker '{broker_id}' not found."
+
+    caps_url = f"{CRM_URL.rstrip('/')}{base_path}/caps"
+    await page.goto(caps_url, wait_until="domcontentloaded", timeout=60000)
+    await page.wait_for_timeout(1500)
+
+    # Ждём загрузки таблицы
+    try:
+        await page.wait_for_selector("table tr td, .table tr td", timeout=8000)
+    except Exception:
+        pass
+    await page.wait_for_timeout(500)
+
+    # Ищем строку с нужной страной
+    existing_pencil = None
+    old_cap = None
+    rows = await page.query_selector_all("table tbody tr, table tr[role='row']")
+    for row in rows:
+        row_text = (await row.inner_text()).strip()
+        if country.lower() in row_text.lower():
+            # Нашли строку — ищем карандаш (синяя кнопка редактирования)
+            pencil = await row.query_selector("button.btn-primary, button.btn.btn-primary")
+            if pencil:
+                existing_pencil = pencil
+                # Пытаемся прочитать текущий cap из строки
+                tds = await row.query_selector_all("td")
+                for td in tds:
+                    td_text = (await td.inner_text()).strip()
+                    # Ищем число которое похоже на cap (не 0%, не "daily", не страну)
+                    if td_text.isdigit() and int(td_text) > 0:
+                        old_cap = td_text
+                break
+
+    if existing_pencil:
+        # Редактируем существующий кап
+        await existing_pencil.click()
+        await page.wait_for_timeout(800)
+
+        try:
+            modal = await page.wait_for_selector(".modal-body, [role='dialog']", timeout=5000)
+        except Exception:
+            return f"❌ {country}: modal did not open."
+
+        await page.wait_for_timeout(500)
+
+        # Находим поле Cap — input[type="number"] с min="0"
+        cap_input = await modal.query_selector("input[type='number'].form-control")
+        if not cap_input:
+            # Ищем по label "Cap"
+            cap_input = await page.evaluate("""() => {
+                const labels = document.querySelectorAll('.modal label, [role=dialog] label');
+                for (const label of labels) {
+                    if (label.textContent.trim().toLowerCase().startsWith('cap')) {
+                        const input = label.closest('.form-group, .row')?.querySelector('input[type=number]');
+                        if (input) return true;
+                    }
+                }
+                return false;
+            }""")
+            if cap_input:
+                cap_input = await page.query_selector(".modal input[type='number'], [role='dialog'] input[type='number']")
+
+        if not cap_input:
+            # Fallback — последний number input в модалке
+            all_number_inputs = await modal.query_selector_all("input[type='number']")
+            if all_number_inputs:
+                cap_input = all_number_inputs[-1]
+
+        if not cap_input:
+            await _close_modal(page)
+            return f"❌ {country}: Cap field not found in modal."
+
+        await cap_input.click(click_count=3)
+        await cap_input.type(str(cap_value))
+        await page.wait_for_timeout(300)
+
+        # Сохраняем — кнопка SAVE CAP
+        try:
+            save_btn = await page.wait_for_selector(
+                ".modal button:has-text('SAVE CAP'), .modal-footer button[type='submit'], "
+                ".modal .btn-ladda.btn-success",
+                timeout=5000
+            )
+            await save_btn.click()
+            await page.wait_for_timeout(1000)
+            if old_cap:
+                return f"✅ {country}: cap {old_cap} → {cap_value}"
+            return f"✅ {country}: cap set to {cap_value}"
+        except Exception:
+            await _close_modal(page)
+            return f"⚠️ {country}: SAVE CAP button not found."
+
+    else:
+        # Кап does not exist — создаём новый через ADD CAP
+        try:
+            add_btn = await page.wait_for_selector(
+                "button:has-text('ADD CAP'), a:has-text('ADD CAP'), "
+                "button.btn_big.btn-primary",
+                timeout=8000
+            )
+            await add_btn.click()
+            await page.wait_for_timeout(800)
+        except Exception:
+            return f"❌ ADD CAP button not found."
+
+        try:
+            modal = await page.wait_for_selector(".modal-body, [role='dialog']", timeout=5000)
+        except Exception:
+            return f"❌ Modal did not open."
+
+        await page.wait_for_timeout(500)
+
+        # === Выбор страны в Caps ===
+        # Структура (из DevTools):
+        #   div.smart__dropdown → клик открывает список
+        #   input#country-8or__search-input → поле поиска (появляется после клика)
+        #   li.dropdown-item → элементы списка
+        #   повторный клик по div.smart__dropdown → закрывает список
+        try:
+            dropdown_toggle = await modal.query_selector(
+                ".smart__dropdown, [class*='smart__dropdown'], .smart__dropdown__input__element"
+            )
+            if not dropdown_toggle:
+                raise Exception("Countries dropdown trigger not found")
+
+            await dropdown_toggle.click()
+            log.info("Clicked countries dropdown")
+
+            # Ждём появления поля поиска — id содержит 'search-input'
+            # Используем wait_for_selector, не query_selector — иначе Vue не успевает
+            try:
+                search_input = await page.wait_for_selector(
+                    "input[id*='search-input']", timeout=5000
+                )
+            except Exception:
+                search_input = None
+
+            if not search_input:
+                # Fallback — любой видимый text input внутри открытого дропдауна
+                try:
+                    search_input = await page.wait_for_selector(
+                        ".bg-white input[type='text'], [class*='dropdown__menu'] input[type='text']",
+                        timeout=3000
+                    )
+                except Exception:
+                    search_input = None
+
+            log.info(f"Search input found: {search_input is not None}")
+
+            if search_input:
+                await search_input.click(click_count=3)
+                await search_input.type(country, delay=50)
+                # Триггерим Vue фильтрацию
+                await search_input.evaluate(
+                    "el => { el.dispatchEvent(new Event('input', {bubbles:true})); "
+                    "el.dispatchEvent(new Event('change', {bubbles:true})); }"
+                )
+                # Ждём пока список отфильтруется
+                for _ in range(20):
+                    await page.wait_for_timeout(200)
+                    cnt = await page.evaluate("() => document.querySelectorAll('li.dropdown-item').length")
+                    if cnt < 10:
+                        break
+                log.info(f"Typed '{country}', items after filter: {cnt}")
+
+            # Кликаем по нужной стране
+            country_selected = False
+            try:
+                await page.wait_for_selector("li.dropdown-item", timeout=5000)
+            except Exception:
+                pass
+
+            items = await page.query_selector_all("li.dropdown-item")
+            log.info(f"Dropdown items: {len(items)}")
+            for item in items:
+                txt = (await item.inner_text()).strip()
+                if country.lower() in txt.lower():
+                    await item.click()
+                    country_selected = True
+                    log.info(f"Country selected: {txt}")
+                    await page.wait_for_timeout(400)
+                    break
+
+            if not country_selected:
+                await _close_modal(page)
+                return f"❌ Country '{country}' not found in list."
+
+        except Exception as e:
+            await _close_modal(page)
+            return f"❌ Error selecting country: {e}"
+
+        # Закрываем дропдаун — повторный клик по тому же триггеру (как на скриншоте 6)
+        try:
+            toggle_close = await modal.query_selector(
+                ".smart__dropdown, [class*='smart__dropdown'], .smart__dropdown__input__element"
+            )
+            if toggle_close:
+                await toggle_close.click()
+                await page.wait_for_timeout(400)
+                log.info("Closed countries dropdown")
+        except Exception:
+            pass
+
+        modal = await page.query_selector(".modal-body, [role='dialog']")
+        if not modal:
+            return "❌ Modal closed after country selection."
+
+        # Вводим значение капа
+        cap_input = await modal.query_selector("input[type='number'].form-control")
+        if not cap_input:
+            all_number_inputs = await modal.query_selector_all("input[type='number']")
+            if all_number_inputs:
+                cap_input = all_number_inputs[-1]
+
+        if not cap_input:
+            await _close_modal(page)
+            return f"❌ Cap field not found."
+
+        await cap_input.click(click_count=3)
+        await cap_input.type(str(cap_value))
+        await page.wait_for_timeout(300)
+
+        # Сохраняем
+        try:
+            save_btn = await page.wait_for_selector(
+                ".modal button:has-text('SAVE CAP'), .modal-footer button[type='submit'], "
+                ".modal .btn-ladda.btn-success",
+                timeout=5000
+            )
+            await save_btn.click()
+            await page.wait_for_timeout(1000)
+            return f"✅ {country}: cap created: {cap_value}"
+        except Exception:
+            await _close_modal(page)
+            return f"⚠️ {country}: SAVE CAP button not found."
 
 
 # ══════════════════════════════════════════
@@ -2084,16 +2364,16 @@ def build_confirm_text(action: dict) -> str:
         h = action.get("hours", {})
         brokers = ", ".join(str(b) for b in action.get("broker_ids", []))
         countries = ", ".join(action.get("countries", ["все"]))
-        days = ", ".join(action.get("days", ["все дни"]))
+        days = ", ".join(action.get("days_to_keep", ["Mon–Fri"]))
         return (
-            f"📋 *Запрос подтверждения*\n\n"
-            f"Действие: изменить часы работы\n"
-            f"Брокеры: `{brokers}`\n"
-            f"Время: `{h.get('start','?')} — {h.get('end','?')}`\n"
-            f"Страны: {countries}\n"
-            f"Дни: {days}\n"
-            f"No-traffic: {'✅ да' if action.get('no_traffic', True) else '❌ нет'}\n\n"
-            f"Подтверждаешь?"
+            f"📋 *Confirmation required*\n\n"
+            f"Action: change working hours\n"
+            f"Brokers: `{brokers}`\n"
+            f"Time: `{h.get('start','?')} — {h.get('end','?')}`\n"
+            f"Countries: {countries}\n"
+            f"Days: {days}\n"
+            f"No-traffic: {'✅ yes' if action.get('no_traffic', True) else '❌ no'}\n\n"
+            f"Confirm?"
         )
 
     if a == "add_hours":
@@ -2110,35 +2390,35 @@ def build_confirm_text(action: dict) -> str:
                 sched_lines.append(f"  • {g.get('start')}–{g.get('end')}: {days_str}")
             sched_str = "\n".join(sched_lines)
             return (
-                f"📋 *Запрос подтверждения*\n\n"
-                f"Действие: добавить часы для стран\n"
-                f"Брокеры: `{brokers}`\n"
-                f"Страны: {countries_str}\n"
-                f"Расписание:\n{sched_str}\n"
-                f"No-traffic: {'✅ да' if action.get('no_traffic', True) else '❌ нет'}\n\n"
-                f"Подтверждаешь?"
+                f"📋 *Confirmation required*\n\n"
+                f"Action: добавить hours for стран\n"
+                f"Brokers: `{brokers}`\n"
+                f"Countries: {countries_str}\n"
+                f"Schedule:\n{sched_str}\n"
+                f"No-traffic: {'✅ yes' if action.get('no_traffic', True) else '❌ no'}\n\n"
+                f"Confirm?"
             )
         else:
-            days = ", ".join(action.get("days_to_keep", ["пн–пт"]))
+            days = ", ".join(action.get("days_to_keep", ["Mon–Fri"]))
             lines = "\n".join(f"  • {ch['country']}: {ch['start']}–{ch['end']}" for ch in ch_list)
             return (
-                f"📋 *Запрос подтверждения*\n\n"
-                f"Действие: добавить часы для стран\n"
-                f"Брокеры: `{brokers}`\n"
-                f"Страны и часы:\n{lines}\n"
-                f"Дни: {days}\n"
-                f"No-traffic: {'✅ да' if action.get('no_traffic', True) else '❌ нет'}\n\n"
-                f"Подтверждаешь?"
+                f"📋 *Confirmation required*\n\n"
+                f"Action: добавить hours for стран\n"
+                f"Brokers: `{brokers}`\n"
+                f"Countries & hours:\n{lines}\n"
+                f"Days: {days}\n"
+                f"No-traffic: {'✅ yes' if action.get('no_traffic', True) else '❌ no'}\n\n"
+                f"Confirm?"
             )
 
     if a == "toggle_broker":
         brokers = ", ".join(str(b) for b in action.get("broker_ids", []))
-        word = "ВКЛЮЧИТЬ" if action.get("active") else "ВЫКЛЮЧИТЬ"
+        word = "ENABLE" if action.get("active") else "DISABLE"
         return (
-            f"📋 *Запрос подтверждения*\n\n"
-            f"Действие: {word} брокера\n"
-            f"Брокеры: `{brokers}`\n\n"
-            f"Подтверждаешь?"
+            f"📋 *Confirmation required*\n\n"
+            f"Action: {word} брокера\n"
+            f"Brokers: `{brokers}`\n\n"
+            f"Confirm?"
         )
 
     if a == "close_days":
@@ -2146,11 +2426,11 @@ def build_confirm_text(action: dict) -> str:
         cd_list = action.get("countries_days", [])
         lines = "\n".join(f"  • {cd['country']}: {', '.join(cd['days_to_close'])}" for cd in cd_list)
         return (
-            f"📋 *Запрос подтверждения*\n\n"
-            f"Действие: закрыть дни\n"
-            f"Брокеры: `{brokers}`\n"
-            f"Страны и дни:\n{lines}\n\n"
-            f"Подтверждаешь?"
+            f"📋 *Confirmation required*\n\n"
+            f"Action: close days\n"
+            f"Brokers: `{brokers}`\n"
+            f"Countries & days:\n{lines}\n\n"
+            f"Confirm?"
         )
 
     if a == "add_revenue":
@@ -2163,55 +2443,53 @@ def build_confirm_text(action: dict) -> str:
             amount = action.get("amount", "?")
             lines = f"  • {country}: ${amount}"
         return (
-            f"📋 *Запрос подтверждения*\n\n"
-            f"Действие: добавить прайс\n"
-            f"Брокеры: `{brokers}`\n"
-            f"Страны и суммы:\n{lines}\n\n"
-            f"Подтверждаешь?"
+            f"📋 *Confirmation required*\n\n"
+            f"Action: добавить прайс\n"
+            f"Brokers: `{brokers}`\n"
+            f"Countries & amounts:\n{lines}\n\n"
+            f"Confirm?"
         )
 
     if a == "add_affiliate_revenue":
         aff_id = action.get("affiliate_id", "?")
         cr_list = action.get("country_revenues", [])
-        lines = "\n".join(f"  • {cr['country']}: ${cr['amount']}" for cr in cr_list) if cr_list else "  • все страны"
+        lines = "\n".join(f"  • {cr['country']}: ${cr['amount']}" for cr in cr_list) if cr_list else "  • all countries"
         return (
-            f"📋 *Запрос подтверждения*\n\n"
-            f"Действие: добавить прайс аффилиату\n"
-            f"Аффилиат: `{aff_id}`\n"
-            f"Страны и суммы:\n{lines}\n\n"
-            f"Подтверждаешь?"
+            f"📋 *Confirmation required*\n\n"
+            f"Action: add affiliate price\n"
+            f"Affiliate: `{aff_id}`\n"
+            f"Countries & amounts:\n{lines}\n\n"
+            f"Confirm?"
         )
 
-    return f"📋 Действие: `{a}`\n\nПодтверждаешь?"
+    if a == "change_caps":
+        brokers = ", ".join(str(b) for b in action.get("broker_ids", []))
+        cc_list = action.get("country_caps", [])
+        # Обратная совместимость: старый формат
+        if not cc_list:
+            countries = action.get("countries", [])
+            cap_val = action.get("caps", "?")
+            cc_list = [{"country": c, "cap": cap_val} for c in countries]
+        lines = "\n".join(f"  • {cc['country']}: {cc['cap']}" for cc in cc_list)
+        return (
+            f"📋 *Confirmation required*\n\n"
+            f"Action: change cap\n"
+            f"Brokers: `{brokers}`\n"
+            f"Countries & caps:\n{lines}\n\n"
+            f"Confirm?"
+        )
+
+    return f"📋 Action: `{a}`\n\nConfirm?"
 
 
-async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-
-    # Защита — только твой аккаунт
-    if chat_id != ALLOWED_CHAT_ID:
-        return
-
-    text = update.message.text.strip()
-    await update.message.reply_text("🤔 Анализирую команду…")
-
-    action = await asyncio.get_event_loop().run_in_executor(None, parse_command, text)
-
-    # Для add_affiliate_revenue broker_ids может быть пустым — используем affiliate_id
-    if action.get("action") == "add_affiliate_revenue" and action.get("affiliate_id") and not action.get("broker_ids"):
-        action["broker_ids"] = [str(action["affiliate_id"])]
-
-    # Для get_affiliate_revenue тоже
-    if action.get("action") == "get_affiliate_revenue" and action.get("affiliate_id") and not action.get("broker_ids"):
-        action["broker_ids"] = [str(action["affiliate_id"])]
-
-    # get_prices — выполняем без подтверждения
-    if action.get("action") == "get_prices":
-        if not action.get("broker_ids"):
-            action["broker_ids"] = ["_"]  # placeholder чтобы пройти валидацию
-        queries = action.get("queries", [])
-        if queries:
-            await update.message.reply_text("🔍 Ищу прайсы…")
+async def _execute_get_task(bot, chat_id: int, action: dict, text: str):
+    """Выполнить get-операцию (вызывается из очереди)."""
+    a = action.get("action")
+    try:
+        if a == "get_prices":
+            if not action.get("broker_ids"):
+                action["broker_ids"] = ["_"]
+            queries = action.get("queries", [])
             sub_results = []
             for q in queries:
                 qtype = q.get("type", "broker")
@@ -2221,92 +2499,46 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                       ", ".join(qcountries), "pending", user_command=text)
                 if qtype == "affiliate":
                     sub_msg = await action_get_affiliate_revenue(str(qid), qcountries)
-                    sub_results.append(f"*Афф {escape_md(str(qid))}:*\n{escape_md(sub_msg)}")
+                    sub_results.append(f"*Aff {escape_md(str(qid))}:*\n{escape_md(sub_msg)}")
                 else:
                     sub_msg = await action_get_broker_revenue(str(qid), qcountries)
-                    sub_results.append(f"*Брокер {escape_md(str(qid))}:*\n{escape_md(sub_msg)}")
+                    sub_results.append(f"*Broker {escape_md(str(qid))}:*\n{escape_md(sub_msg)}")
                 alog.update_action(lid, "success" if "❌" not in sub_msg else "error", sub_msg[:200])
-            alog.set_status("last_action", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-            await update.message.reply_text("\n\n".join(sub_results), parse_mode="Markdown")
-            return
+            await bot.send_message(chat_id, "\n\n".join(sub_results), parse_mode="Markdown")
 
-    # get_broker_revenue и get_affiliate_revenue — тоже без подтверждения
-    if action.get("action") in ("get_broker_revenue", "get_affiliate_revenue"):
-        await update.message.reply_text("🔍 Ищу прайс…")
-        if action.get("action") == "get_broker_revenue":
-            for bid in action.get("broker_ids", []):
-                lid = alog.log_action("get_broker_revenue", str(bid),
+        elif a in ("get_broker_revenue", "get_affiliate_revenue"):
+            if a == "get_broker_revenue":
+                for bid in action.get("broker_ids", []):
+                    lid = alog.log_action("get_broker_revenue", str(bid),
+                                          ", ".join(action.get("countries", [])), "pending", user_command=text)
+                    result = await action_get_broker_revenue(str(bid), action.get("countries", []))
+                    alog.update_action(lid, "success" if "❌" not in result else "error", result[:200])
+                    await bot.send_message(chat_id, f"*Broker {escape_md(str(bid))}:*\n{escape_md(result)}", parse_mode="Markdown")
+            else:
+                aff_id = str(action.get("affiliate_id") or action.get("broker_ids", ["?"])[0])
+                lid = alog.log_action("get_affiliate_revenue", aff_id,
                                       ", ".join(action.get("countries", [])), "pending", user_command=text)
-                result = await action_get_broker_revenue(str(bid), action.get("countries", []))
+                result = await action_get_affiliate_revenue(aff_id, action.get("countries", []))
                 alog.update_action(lid, "success" if "❌" not in result else "error", result[:200])
-                await update.message.reply_text(f"*Брокер {escape_md(str(bid))}:*\n{escape_md(result)}", parse_mode="Markdown")
-        else:
-            aff_id = str(action.get("affiliate_id") or action.get("broker_ids", ["?"])[0])
-            lid = alog.log_action("get_affiliate_revenue", aff_id,
-                                  ", ".join(action.get("countries", [])), "pending", user_command=text)
-            result = await action_get_affiliate_revenue(aff_id, action.get("countries", []))
-            alog.update_action(lid, "success" if "❌" not in result else "error", result[:200])
-            await update.message.reply_text(f"*Афф {escape_md(aff_id)}:*\n{escape_md(result)}", parse_mode="Markdown")
+                await bot.send_message(chat_id, f"*Aff {escape_md(aff_id)}:*\n{escape_md(result)}", parse_mode="Markdown")
+
+        elif a == "get_hours":
+            for bid in action.get("broker_ids", []):
+                lid = alog.log_action("get_hours", str(bid),
+                                      ", ".join(action.get("countries", ["all"])), "pending", user_command=text)
+                result = await action_get_hours(str(bid), action.get("countries", ["all"]))
+                alog.update_action(lid, "success" if "❌" not in result else "error", result[:200])
+                await bot.send_message(chat_id, f"*Broker {escape_md(str(bid))}:*\n{escape_md(result)}", parse_mode="Markdown")
+
         alog.set_status("last_action", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        return
 
-    # get_hours — узнать часы работы, тоже без подтверждения
-    if action.get("action") == "get_hours":
-        await update.message.reply_text("🔍 Ищу часы…")
-        for bid in action.get("broker_ids", []):
-            lid = alog.log_action("get_hours", str(bid),
-                                  ", ".join(action.get("countries", ["all"])), "pending", user_command=text)
-            result = await action_get_hours(str(bid), action.get("countries", ["all"]))
-            alog.update_action(lid, "success" if "❌" not in result else "error", result[:200])
-            await update.message.reply_text(f"*Брокер {escape_md(str(bid))}:*\n{escape_md(result)}", parse_mode="Markdown")
-        alog.set_status("last_action", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        return
-
-    if action.get("action") == "unknown" or not action.get("broker_ids"):
-        log.warning(f"Команда не распознана. action={action}")
-        await update.message.reply_text(
-            "❓ Не понял команду. Попробуй например:\n\n"
-            "• «поменяй часы Test Broker на 10-19»\n"
-            "• «дай часы Nexus FR» или «wh Nexus FR»\n"
-            "• «включи брокера 32»\n"
-            "• «выключи брокеров 32 и 2111»"
-        )
-        return
-
-    # Сохраняем и просим подтвердить
-    kb = [[
-        InlineKeyboardButton("✅ Выполнить", callback_data="confirm"),
-        InlineKeyboardButton("❌ Отмена",    callback_data="cancel"),
-    ]]
-    sent = await update.message.reply_text(
-        build_confirm_text(action),
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(kb)
-    )
-    # Ключ = (chat_id, message_id) — каждая команда получает свой слот
-    action["_user_command"] = text  # сохраняем для логирования
-    pending[(chat_id, sent.message_id)] = action
+    except Exception as e:
+        log.exception(f"Error in get task: {e}")
+        await bot.send_message(chat_id, f"❌ Error: `{escape_md(str(e))}`", parse_mode="Markdown")
 
 
-async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    chat_id = update.effective_chat.id
-    pending_key = (chat_id, query.message.message_id)
-
-    if query.data == "cancel":
-        pending.pop(pending_key, None)
-        await query.edit_message_text("❌ Отменено. Ничего не изменено.")
-        return
-
-    action = pending.pop(pending_key, None)
-    if not action:
-        await query.edit_message_text("❌ Команда устарела. Отправь заново.")
-        return
-
-    await query.edit_message_text("⏳ Выполняю, это займёт несколько секунд…")
-
-    # Логируем начало выполнения
+async def _execute_confirmed_task(bot, chat_id: int, action: dict):
+    """Выполнить подтверждённое действие (вызывается из очереди)."""
     user_cmd = action.get("_user_command", "")
     log_ids = []
 
@@ -2318,6 +2550,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lid = alog.log_action(a, str(broker_id), json.dumps(action, ensure_ascii=False)[:300],
                                   "pending", user_command=user_cmd)
             log_ids.append(lid)
+
             if a == "change_hours":
                 h = action.get("hours", {})
                 msg = await action_change_hours(
@@ -2326,11 +2559,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     end=h.get("end", "17:00"),
                     countries_filter=action.get("countries", ["all"]),
                     no_traffic=action.get("no_traffic", True),
-                    days_filter=action.get("days_to_keep", action.get("days", ["all"]))
+                    days_filter=action.get("days_to_keep", action.get("days", ["Monday","Tuesday","Wednesday","Thursday","Friday"]))
                 )
             elif a == "add_hours":
                 country_hours_list = action.get("country_hours", [])
-                # Обратная совместимость: если старый формат (countries + hours)
                 if not country_hours_list:
                     h = action.get("hours", {})
                     countries = action.get("countries", [])
@@ -2339,23 +2571,20 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         country_hours_list = [{"country": country, "start": h.get("start", "09:00"), "end": h.get("end", "17:00")}]
 
                 if not country_hours_list:
-                    msg = "❌ Укажи страну и часы для добавления."
+                    msg = "❌ Укажи страну и hours for добавления."
                 else:
                     schedule_groups = action.get("schedule_groups", [])
-                    days_filter    = action.get("days_to_keep", action.get("days", ["all"]))
+                    days_filter    = action.get("days_to_keep", action.get("days", ["Monday","Tuesday","Wednesday","Thursday","Friday"]))
                     requested_day  = action.get("requested_day", "")
                     skip_missing   = action.get("skip_missing", False)
 
-                    # Определяем является ли запрошенный день выходным
                     weekends = {"saturday", "sunday"}
                     weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
                     req_day_lower = requested_day.lower() if requested_day else ""
                     is_weekend_request = req_day_lower in weekends
-                    # Нет дня = рабочие дни по умолчанию (не выходной)
                     if not requested_day:
                         is_weekend_request = False
 
-                    # Получаем список существующих стран (открываем страницу один раз)
                     existing_countries = []
                     try:
                         page = await get_page()
@@ -2364,9 +2593,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             oh_url = f"{CRM_URL.rstrip('/')}{broker_base}/opening_hours"
                             await page.goto(oh_url, wait_until="domcontentloaded", timeout=60000)
                             existing_countries = await _scrape_countries_from_page(page)
-                            log.info(f"Существующие страны: {existing_countries}")
+                            log.info(f"Existing countries: {existing_countries}")
                     except Exception as e:
-                        log.warning(f"Не удалось получить существующие страны: {e}")
+                        log.warning(f"Failed to get existing countries: {e}")
 
                     sub_results = []
                     skipped = []
@@ -2378,7 +2607,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                         country_exists = any(country_name.lower() in ec.lower() for ec in existing_countries)
 
-                        # Если есть schedule_groups — используем мульти-функцию (один проход)
                         if schedule_groups:
                             sub_msg = await action_add_country_hours_multi(
                                 broker_id=str(broker_id),
@@ -2392,8 +2620,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                         if requested_day:
                             if country_exists:
-                                # Страна есть + конкретный день → добавляем только этот день
-                                log.info(f"{country_name} существует → добавляю день {requested_day}")
+                                log.info(f"{country_name} exists → adding day {requested_day}")
                                 sub_msg = await action_edit_country_add_days(
                                     broker_id=str(broker_id),
                                     country=country_name,
@@ -2403,15 +2630,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                     days_to_add=[requested_day]
                                 )
                             else:
-                                # Страны нет → создаём
                                 if is_weekend_request:
-                                    # Выходной → только этот день
                                     new_days_filter = [requested_day]
-                                    log.info(f"{country_name} не существует, выходной → создаю только {new_days_filter}")
+                                    log.info(f"{country_name} does not exist, weekend → creating only {new_days_filter}")
                                 else:
-                                    # Будний или нет дня → создаём с Пн–Пт
                                     new_days_filter = weekdays
-                                    log.info(f"{country_name} не существует → создаю с Пн–Пт")
+                                    log.info(f"{country_name} не exists → creating Mon-Fri")
                                 sub_msg = await action_add_country_hours(
                                     broker_id=str(broker_id),
                                     country=country_name,
@@ -2423,9 +2647,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         elif skip_missing and existing_countries:
                             if not country_exists:
                                 skipped.append(country_name)
-                                log.info(f"Пропускаю {country_name} — нет у брокера")
+                                log.info(f"Skipping {country_name} — not found for broker")
                                 continue
-                            # Страна есть + skip_missing → редактируем, только добавляем дни
                             days_to_add = days_filter if "all" not in [d.lower() for d in days_filter] else ["Saturday", "Sunday"]
                             sub_msg = await action_edit_country_add_days(
                                 broker_id=str(broker_id),
@@ -2447,11 +2670,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         sub_results.append(sub_msg)
 
                     if skipped:
-                        sub_results.append(f"⏭ Пропущены (нет у брокера): {', '.join(skipped)}")
+                        sub_results.append(f"⏭ Skipped (not found): {', '.join(skipped)}")
                     msg = "\n".join(sub_results)
             elif a == "close_days":
                 countries_days = action.get("countries_days", [])
-                # Обратная совместимость: старый формат (одна страна)
                 if not countries_days:
                     countries = action.get("countries", [])
                     country = countries[0] if countries and "all" not in countries else "all"
@@ -2460,7 +2682,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         countries_days = [{"country": country, "days_to_close": days_to_close}]
 
                 if not countries_days:
-                    msg = "❌ Укажи страны и дни для закрытия."
+                    msg = "❌ Please specify countries and days."
                 else:
                     sub_results = []
                     for cd in countries_days:
@@ -2473,7 +2695,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     msg = "\n".join(sub_results)
             elif a == "add_revenue":
                 country_revenues = action.get("country_revenues", [])
-                # Обратная совместимость: старый формат (одна страна + amount)
                 if not country_revenues:
                     countries = action.get("countries", [])
                     country = countries[0] if countries and "all" not in countries else "all"
@@ -2482,7 +2703,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         country_revenues = [{"country": country, "amount": amount}]
 
                 if not country_revenues:
-                    msg = "❌ Укажи страну и сумму прайса."
+                    msg = "❌ Please specify country and amount."
                 else:
                     sub_results = []
                     for cr in country_revenues:
@@ -2503,7 +2724,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if amount:
                         cr_list = [{"country": country, "amount": amount}]
                 if not cr_list:
-                    msg = "❌ Укажи страну и сумму прайса."
+                    msg = "❌ Please specify country and amount."
                 else:
                     sub_results = []
                     for cr in cr_list:
@@ -2516,50 +2737,147 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     msg = "\n".join(sub_results)
             elif a == "toggle_broker":
                 msg = await action_toggle_broker(str(broker_id), action.get("active", True))
+            elif a == "change_caps":
+                cc_list = action.get("country_caps", [])
+                # Обратная совместимость: старый формат (countries + caps)
+                if not cc_list:
+                    countries = action.get("countries", [])
+                    cap_val = action.get("caps")
+                    if countries and cap_val is not None:
+                        cc_list = [{"country": c, "cap": cap_val} for c in countries]
+                if not cc_list:
+                    msg = "❌ Please specify country and cap value."
+                else:
+                    sub_results = []
+                    for cc in cc_list:
+                        sub_msg = await action_change_caps(
+                            broker_id=str(broker_id),
+                            country=cc.get("country", ""),
+                            cap_value=int(cc.get("cap", 0))
+                        )
+                        sub_results.append(sub_msg)
+                    msg = "\n".join(sub_results)
             else:
-                msg = f"⚠️ Действие «{a}» пока не поддерживается."
+                msg = f"⚠️ Действие '{a}' is not supported yet."
 
-            # Выбираем правильный лейбл: Афф или Брокер
-            if a in ("add_affiliate_revenue", "get_affiliate_revenue"):
-                label = "Афф"
+            if a in ("add_affiliate_revenue",):
+                label = "Aff"
             else:
-                label = "Брокер"
+                label = "Broker"
             results.append(f"*{label} {escape_md(str(broker_id))}:*\n{escape_md(msg)}")
 
-        # Обновляем логи результатами
+        # Update logs
         for i, lid in enumerate(log_ids):
-            bid = action.get("broker_ids", ["?"])[i] if i < len(action.get("broker_ids", [])) else "?"
             res_text = results[i] if i < len(results) else ""
             status = "error" if "❌" in res_text else "success"
             alog.update_action(lid, status, res_text[:200])
         alog.set_status("last_action", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
-        await context.bot.send_message(
-            chat_id,
-            "\n\n".join(results) or "✅ Готово.",
-            parse_mode="Markdown"
-        )
+        await bot.send_message(chat_id, "\n\n".join(results) or "✅ Done.", parse_mode="Markdown")
 
     except Exception as e:
-        log.exception("Ошибка при выполнении действия")
+        log.exception("Error executing action")
         for lid in log_ids:
             alog.update_action(lid, "error", str(e)[:200])
-        await context.bot.send_message(
-            chat_id,
-            f"❌ Произошла ошибка:\n`{escape_md(str(e))}`\n\nПроверь логи. Ничего не гарантируется.",
-            parse_mode="Markdown"
+        await bot.send_message(chat_id, f"❌ Error:\n`{escape_md(str(e))}`", parse_mode="Markdown")
+
+
+async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+
+    # Whitelist — чужие полностью игнорируются (без ответа)
+    if chat_id not in ALLOWED_USERS:
+        return
+
+    text = update.message.text.strip()
+    await update.message.reply_text("🤔 Analyzing command...")
+
+    action = await asyncio.get_event_loop().run_in_executor(None, parse_command, text)
+
+    # Для add_affiliate_revenue broker_ids может быть пустым — используем affiliate_id
+    if action.get("action") == "add_affiliate_revenue" and action.get("affiliate_id") and not action.get("broker_ids"):
+        action["broker_ids"] = [str(action["affiliate_id"])]
+
+    # Для get_affiliate_revenue тоже
+    if action.get("action") == "get_affiliate_revenue" and action.get("affiliate_id") and not action.get("broker_ids"):
+        action["broker_ids"] = [str(action["affiliate_id"])]
+
+    # Get-операции — выполняем без подтверждения, через очередь
+    if action.get("action") in ("get_prices", "get_broker_revenue", "get_affiliate_revenue", "get_hours"):
+        queue_size = _task_queue.qsize()
+        if queue_size > 0:
+            await update.message.reply_text(f"⏳ Queued, position #{queue_size + 1}…")
+        else:
+            emoji = "🔍" if action.get("action") != "get_hours" else "🕐"
+            await update.message.reply_text(f"{emoji} Looking up...")
+        await enqueue(_execute_get_task, context.bot, chat_id, action, text)
+        return
+
+    if action.get("action") == "unknown" or not action.get("broker_ids"):
+        log.warning(f"Command not recognized. action={action}")
+        await update.message.reply_text(
+            "❓ Command not recognized. Try for example:\n\n"
+            "• 'Nexus FR 10:00-18:00' — set hours\n"
+            "• 'wh Nexus FR' — check hours\n"
+            "• 'Nexus FR price' — check price\n"
+            "• 'Legion DE cap 20' — set cap"
         )
+        return
+
+    # Сохраняем и просим подтвердить
+    kb = [[
+        InlineKeyboardButton("✅ Execute", callback_data="confirm"),
+        InlineKeyboardButton("❌ Cancel",    callback_data="cancel"),
+    ]]
+    sent = await update.message.reply_text(
+        build_confirm_text(action),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
+    # Ключ = (chat_id, message_id) — каждая команда получает свой слот
+    action["_user_command"] = text  # сохраняем для логирования
+    pending[(chat_id, sent.message_id)] = action
+
+
+async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat_id = update.effective_chat.id
+    pending_key = (chat_id, query.message.message_id)
+
+    # Whitelist
+    if chat_id not in ALLOWED_USERS:
+        return
+
+    if query.data == "cancel":
+        pending.pop(pending_key, None)
+        await query.edit_message_text("❌ Cancelled. Nothing changed.")
+        return
+
+    action = pending.pop(pending_key, None)
+    if not action:
+        await query.edit_message_text("❌ Command expired. Please resend.")
+        return
+
+    queue_size = _task_queue.qsize()
+    if queue_size > 0:
+        await query.edit_message_text(f"⏳ Queued, position #{queue_size + 1}…")
+    else:
+        await query.edit_message_text("⏳ Working on it...")
+
+    await enqueue(_execute_confirmed_task, context.bot, chat_id, action)
 
 
 async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != ALLOWED_CHAT_ID:
+    if update.effective_chat.id not in ALLOWED_USERS:
         return
     await update.message.reply_text(
-        "👋 Привет! Я бот для управления LeadGreed CRM.\n\n"
-        "Что умею:\n"
-        "• Менять часы работы брокеров\n"
-        "• Включать / выключать брокеров\n\n"
-        "Пиши команду на русском — я пойму 😊"
+        "👋 Hi! I'm the LeadGreed CRM bot.\n\n"
+        "I can:\n"
+        "• Set broker working hours\n"
+        "• Look up hours and prices\n"
+        "• Set caps and prices\n\n"
+        "Send a command — I understand 😊"
     )
 
 
@@ -2603,13 +2921,21 @@ atexit.register(_sync_cleanup)
 #  ЗАПУСК
 # ══════════════════════════════════════════
 
+async def _post_init(application):
+    """Инициализация после создания event loop."""
+    global _task_queue, _queue_worker_task
+    _task_queue = asyncio.Queue()
+    _queue_worker_task = asyncio.create_task(_queue_worker())
+    log.info("Task queue started.")
+
+
 def main():
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app = Application.builder().token(TELEGRAM_TOKEN).post_init(_post_init).build()
     app.add_handler(CommandHandler("start", on_start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
     app.add_handler(CallbackQueryHandler(on_callback))
 
-    log.info("Бот запущен ✅")
+    log.info("Bot started ✅")
     alog.set_status("bot_started", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
