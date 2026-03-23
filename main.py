@@ -3636,6 +3636,21 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     text = update.message.text.strip()
+
+    # В групповых чатах — реагируем только на сообщения, похожие на CRM-команды
+    # В личке — обрабатываем всё
+    is_group = update.effective_chat.type in ("group", "supergroup")
+    if is_group:
+        text_lower = text.lower()
+        has_number = any(c.isdigit() for c in text)
+        crm_keywords = ("cap", "price", "wh ", "hours", "прайс", "часы", "cpa", "crg",
+                        "кап", "лимит", "helios", "nexus", "fintrix", "capitan", "legion",
+                        "marsi", "clickbait", "imperius", "avelux", "swin", "emp", "cmt",
+                        "glb", "capex", "theta")
+        has_keyword = any(kw in text_lower for kw in crm_keywords)
+        # Нужно число + ключевое слово, иначе это обычная переписка
+        if not (has_number and has_keyword):
+            return
     await update.message.reply_text("🤔 Analyzing command...", disable_notification=True)
 
     action = await asyncio.get_event_loop().run_in_executor(None, parse_command, text)
@@ -3672,14 +3687,16 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action.get("action") == "unknown" or not action.get("broker_ids"):
         log.warning(f"Command not recognized. action={action}")
-        await update.message.reply_text(
-            "❓ Command not recognized. Try for example:\n\n"
-            "• 'Nexus FR 10:00-18:00' — set hours\n"
-            "• 'wh Nexus FR' — check hours\n"
-            "• 'Nexus FR price' — check price\n"
-            "• 'Legion DE cap 20' — set cap",
-            disable_notification=True
-        )
+        # В группе молчим, в личке — показываем подсказку
+        if not is_group:
+            await update.message.reply_text(
+                "❓ Command not recognized. Try for example:\n\n"
+                "• 'Nexus FR 10:00-18:00' — set hours\n"
+                "• 'wh Nexus FR' — check hours\n"
+                "• 'Nexus FR price' — check price\n"
+                "• 'Legion DE cap 20' — set cap",
+                disable_notification=True
+            )
         return
 
     # Сохраняем и просим подтвердить
