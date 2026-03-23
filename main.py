@@ -177,17 +177,34 @@ SYSTEM_PROMPT = """
   ВАЖНО: ISO коды (DE, FR, ES...) и названия стран — это ВСЕГДА страны, а НЕ часть имени брокера.
   Никогда не склеивай имя брокера и страну в одну строку.
   Если страна не указана — countries: ["all"] (показать all countries)
-- Для change_caps: broker_ids = брокер, country_caps = список {country, cap}
+- Для change_caps: broker_ids = брокер, country_caps = список {country, cap, delta?}
   Ключевые слова: "cap", "капа", "кап", "лимит", "total cap"
   Если одна страна и одна капа — тоже country_caps (список из одного элемента).
+  Если пользователь говорит "добавь N к капе" / "add N cap" / "increase cap by N" / "прибавь N" —
+  используй поле "delta" вместо "cap" (delta — число, может быть отрицательным для уменьшения).
   Примеры:
   • "set Legion DE cap 20" → {"action": "change_caps", "broker_ids": ["Legion"], "country_caps": [{"country": "Germany", "cap": 20}]}
-  • "поставь капу по германии для легиона 20" → {"action": "change_caps", "broker_ids": ["Legion"], "country_caps": [{"country": "Germany", "cap": 20}]}
   • "legion de total cap 20" → {"action": "change_caps", "broker_ids": ["Legion"], "country_caps": [{"country": "Germany", "cap": 20}]}
+  • "add 5 cap to Legion DE" → {"action": "change_caps", "broker_ids": ["Legion"], "country_caps": [{"country": "Germany", "delta": 5}]}
+  • "добавь 5 к капе легион де" → {"action": "change_caps", "broker_ids": ["Legion"], "country_caps": [{"country": "Germany", "delta": 5}]}
+  • "уменьши капу легион де на 3" → {"action": "change_caps", "broker_ids": ["Legion"], "country_caps": [{"country": "Germany", "delta": -3}]}
   • "Nexus DE 15 cap ES 20 cap" → {"action": "change_caps", "broker_ids": ["Nexus"], "country_caps": [{"country": "Germany", "cap": 15}, {"country": "Spain", "cap": 20}]}
   • "капитан FR ES cap 10" → {"action": "change_caps", "broker_ids": ["Capitan"], "country_caps": [{"country": "France", "cap": 10}, {"country": "Spain", "cap": 10}]}
-  ВАЖНО: cap должен быть числом (int). Country обязательна.
+  • "legion de 20 cap aff 127" → {"action": "change_caps", "broker_ids": ["Legion"], "country_caps": [{"country": "Germany", "cap": 20, "affiliate_id": "127"}]}
+  • "поставь капу 15 легион де для аффа 127" → {"action": "change_caps", "broker_ids": ["Legion"], "country_caps": [{"country": "Germany", "cap": 15, "affiliate_id": "127"}]}
+  Если в команде есть "aff N", "affiliate N", "аф N", "аффу N", "для аффа N" — добавляй поле "affiliate_id": "N" в country_caps.
+  ВАЖНО: cap или delta должен быть числом (int). Country обязательна.
   Отличай от прайсов! "cap", "кап", "лимит" → change_caps. "прайс", "price", "$" → add_revenue.
+- Для get_caps: узнать текущие капы брокера для страны/стран.
+  Ключевые слова: "какая капа", "what cap", "check cap", "cap?", "сколько капа", "узнай капу", "get cap", "how much", "сколько набрали", "сколько лидов", "how many", "filled", "filled?"
+  Примеры:
+  • "какая капа у легиона де" → {"action": "get_caps", "broker_ids": ["Legion"], "countries": ["Germany"]}
+  • "legion de cap?" → {"action": "get_caps", "broker_ids": ["Legion"], "countries": ["Germany"]}
+  • "check cap nexus fr es" → {"action": "get_caps", "broker_ids": ["Nexus"], "countries": ["France", "Spain"]}
+  • "что за капа у capitan" → {"action": "get_caps", "broker_ids": ["Capitan"], "countries": ["all"]}
+  • "cap legion australia aff 28" → {"action": "get_caps", "broker_ids": ["Legion"], "countries": ["Australia"], "affiliate_id": "28"}
+  • "какая капа легион австралия аф 28" → {"action": "get_caps", "broker_ids": ["Legion"], "countries": ["Australia"], "affiliate_id": "28"}
+  Если страна не указана — countries: ["all"]. Если аф не указан — affiliate_id: null (показать все капы).
 
 Если пользователь запрашивает прайсы для НЕСКОЛЬКИХ объектов (аффов и/или брокеров) сразу — используй поле "queries":
 {
@@ -227,6 +244,12 @@ SYSTEM_PROMPT = """
      "country_revenues": [{"country": "Colombia", "amount": 650}, {"country": "Chile", "amount": 650}]}
   Отличие от брокера: для брокера пишут имя или ID с названием, для аффа — просто число
 
+- Для add_revenue и add_affiliate_revenue: если в команде есть "aff N", "affiliate N", "аф N", "аффу N", "для аффа N" — добавляй поле "affiliate_id": "N" в каждый элемент country_revenues.
+  Примеры:
+  • "добавь прайс Nexus MY 1250 aff 144" → {"action": "add_revenue", "broker_ids": ["Nexus"], "country_revenues": [{"country": "Malaysia", "amount": 1250, "affiliate_id": "144"}]}
+  • "broker 32 / MY 1250 / ID 1000 / aff 127" → country_revenues с affiliate_id "127" в каждом объекте
+  Если affiliate_id не указан — поле не добавляй.
+
 Формат "прайс-листа" для add_revenue с несколькими странами:
 Пользователь может прислать:
   FR 1300$ cpa
@@ -237,6 +260,7 @@ SYSTEM_PROMPT = """
 
 Правила разбора:
 - ISO код страны → переводи в полное название
+- ВАЖНО: В формате прайс-листа (строки вида `КОД ЧИСЛО`) любой 2-буквенный токен — это ВСЕГДА ISO код страны, даже если он совпадает со словами "ID", "IN", "IS", "NO", "IT", "TO" и т.д. Никогда не интерпретируй его как идентификатор или служебное слово. Примеры: "ID 1250" → {country: "Indonesia", amount: 1250}, "IN 900" → {country: "India", amount: 900}
 - Число → сумма прайса
 - $ — игнорируй
 - cpa / crg / тип сделки — игнорируй
@@ -407,7 +431,7 @@ async def get_page() -> Page:
 
 async def do_login():
     """Войти в CRM."""
-    await _page.goto(CRM_URL, wait_until="domcontentloaded", timeout=60000)
+    await _page.goto(CRM_URL, wait_until="commit", timeout=30000)
     await _page.wait_for_timeout(1000)
 
     # Если уже на дашборде — всё хорошо
@@ -496,12 +520,19 @@ async def find_and_open_broker(page: Page, broker_id: str) -> Optional[str]:
     if not search:
         return None
 
-    # Очищаем поле и вводим имя с задержкой — fill() не всегда триггерит фильтрацию
+    # Очищаем поле и вводим имя — принудительно триггерим Vue фильтрацию
     await search.click(click_count=3)
     await page.keyboard.press("Backspace")
-    await page.wait_for_timeout(500)
-    await search.type(broker_id, delay=80)
-    await page.wait_for_timeout(800)
+    await page.wait_for_timeout(300)
+    await search.fill("")
+    await page.wait_for_timeout(200)
+    await search.type(broker_id, delay=60)
+    await page.wait_for_timeout(400)
+    await search.evaluate(
+        "el => { el.dispatchEvent(new Event('input', {bubbles:true})); "
+        "el.dispatchEvent(new Event('change', {bubbles:true})); }"
+    )
+    await page.wait_for_timeout(600)
 
     # Ждём пока таблица отфильтруется — количество строк должно стабилизироваться
     prev_count = -1
@@ -1712,7 +1743,7 @@ async def action_add_affiliate_revenue(affiliate_id: str, country: str, amount: 
         return "⚠️ Save button not found."
 
 
-async def action_add_revenue(broker_id: str, country: str, amount: str) -> str:
+async def action_add_revenue(broker_id: str, country: str, amount: str, affiliate_id: str = None) -> str:
     """Добавить или обновить прайс (revenue) для страны брокера."""
     page = await get_page()
 
@@ -1891,25 +1922,54 @@ async def action_add_revenue(broker_id: str, country: str, amount: str) -> str:
     else:
         return "❌ Amount field not found."
 
+    # ── Параметр Affiliate (если нужен) ──────
+    if affiliate_id:
+        modal = await page.query_selector(".modal-body, [role='dialog']")
+        param_ok = await _add_affiliate_parameter(page, modal, str(affiliate_id), close_dropdown=False)
+        if not param_ok:
+            log.warning(f"Could not add affiliate parameter {affiliate_id} — saving without it")
+            affiliate_id = None  # не показывать (aff X) в сообщении если не добавилось
+        # Закрываем суб-модалку ADD PARAMETER если осталась открытой (блокирует SAVE)
+        await page.evaluate("""() => {
+            // Ищем кнопки закрытия ×  внутри вложенных модалок (не основной)
+            const closeBtns = document.querySelectorAll('.modal .close, [role=dialog] .close, button[aria-label="Close"]');
+            // Кликаем по последней (самой вложенной)
+            if (closeBtns.length > 1) closeBtns[closeBtns.length - 1].click();
+        }""")
+        await page.wait_for_timeout(400)
+
     # ── Сохраняем ─────────────────────────────
     # Даём Vue время обработать ввод суммы
     await page.wait_for_timeout(500)
     try:
-        # Ищем кнопку Save строго внутри модалки
-        save_btn = await page.wait_for_selector(
-            ".modal button[type='submit'], .modal-footer button[type='submit'], "
-            "[role='dialog'] button[type='submit'], .modal .btn-ladda",
-            timeout=5000
-        )
-        log.info("Save button found, clicking...")
-        await save_btn.click()
-        await page.wait_for_timeout(1000)
+        # Кликаем SAVE через JS — обходит проблему pointer-events interception
+        saved = await page.evaluate("""() => {
+            const modals = document.querySelectorAll('.modal.show, [role=dialog]');
+            // Берём первую (основную) модалку
+            for (const modal of modals) {
+                const footer = modal.querySelector('.modal-footer');
+                if (footer) {
+                    const btn = footer.querySelector('button[type=submit], .btn-ladda, .btn-success');
+                    if (btn) { btn.click(); return true; }
+                }
+                const btns = modal.querySelectorAll('button');
+                for (const btn of btns) {
+                    const t = btn.innerText.trim().toUpperCase();
+                    if (t === 'SAVE' || btn.type === 'submit') { btn.click(); return true; }
+                }
+            }
+            return false;
+        }""")
+        await page.wait_for_timeout(1200)
         country_label = country if country.lower() != "all" else "all countries"
-        log.info(f"Price saved for {country_label}: ${amount}")
-        return f"✅ Price added for {country_label}: ${amount}"
+        aff_label = f" (aff {affiliate_id})" if affiliate_id else ""
+        if saved:
+            log.info(f"Price saved for {country_label}: ${amount}{aff_label}")
+            return f"✅ Price added for {country_label}: ${amount}{aff_label}"
+        else:
+            raise Exception("SAVE button not found via JS")
     except Exception as e:
         log.error(f"Кнопка Save not foundа: {e}")
-        # Логируем все кнопки в модалке для диагностики
         btns = await page.evaluate("""() => {
             const modal = document.querySelector('.modal, [role=dialog]');
             if (!modal) return [];
@@ -2102,8 +2162,8 @@ async def action_toggle_broker(broker_id: str, activate: bool) -> str:
         return f"❌ Cannot change broker status: {e}\nNothing changed."
 
 
-async def action_change_caps(broker_id: str, country: str, cap_value: int) -> str:
-    """Изменить или создать cap для страны брокера."""
+async def action_change_caps(broker_id: str, country: str, cap_value: int = 0, delta: int = None, affiliate_id: str = None, delete_first: bool = False) -> str:
+    """Изменить или создать cap для страны брокера. delta — прибавить к текущему значению. affiliate_id — добавить параметр Affiliates."""
     page = await get_page()
 
     base_path = await find_and_open_broker(page, broker_id)
@@ -2111,35 +2171,90 @@ async def action_change_caps(broker_id: str, country: str, cap_value: int) -> st
         return f"❌ Broker '{broker_id}' not found."
 
     caps_url = f"{CRM_URL.rstrip('/')}{base_path}/caps"
-    await page.goto(caps_url, wait_until="domcontentloaded", timeout=60000)
-    await page.wait_for_timeout(1500)
+    await page.goto(caps_url, wait_until="domcontentloaded", timeout=30000)
+    await page.wait_for_timeout(3000)  # даём Vue время отрендерить данные
 
-    # Ждём загрузки таблицы
-    try:
-        await page.wait_for_selector("table tr td, .table tr td", timeout=8000)
-    except Exception:
-        pass
-    await page.wait_for_timeout(500)
+    # Диагностика
+    all_rows_text = await page.evaluate("""() =>
+        Array.from(document.querySelectorAll('table tr'))
+             .filter(r => r.querySelector('td') !== null)
+             .map(r => r.innerText.trim()).filter(t => t)
+    """)
+    log.info(f"Caps data rows ({len(all_rows_text)}): {all_rows_text[:5]}")
 
-    # Ищем строку с нужной страной
+    # Ищем строку с нужной страной через JS
+    cap_row_data = await page.evaluate("""(countryQuery) => {
+        const rows = Array.from(document.querySelectorAll('table tr'))
+            .filter(r => r.querySelector('td') !== null);
+        for (const row of rows) {
+            const tds = row.querySelectorAll('td');
+            if (tds.length < 4) continue;
+            // Countries колонка — ищем страну (последняя td перед кнопками)
+            // Пробуем все td начиная с 4-й
+            let countryText = '';
+            for (let i = 3; i < tds.length; i++) {
+                const t = tds[i].innerText.trim();
+                if (t && !t.includes('%') && !t.match(/^[0-9/]+$/) && t.length > 2) {
+                    countryText = t;
+                    break;
+                }
+            }
+            if (!countryText.toLowerCase().includes(countryQuery.toLowerCase())) continue;
+
+            // Нашли строку — читаем Filled (формат "0/10")
+            let oldCap = null;
+            for (const td of tds) {
+                const t = td.innerText.trim();
+                if (t.includes('/')) {
+                    const parts = t.split('/');
+                    if (parts.length === 2 && !isNaN(parts[1].trim())) {
+                        oldCap = parts[1].trim();
+                        break;
+                    }
+                }
+            }
+            // Есть ли кнопка редактирования
+            const hasEditBtn = !!row.querySelector(
+                'a.btn-primary, button.btn-primary, a[class*="primary"], button[class*="primary"]'
+            );
+            return {found: true, oldCap, hasEditBtn, rowText: row.innerText.trim().substring(0, 100)};
+        }
+        return {found: false};
+    }""", country)
+
+    log.info(f"Cap row search result: {cap_row_data}")
+
     existing_pencil = None
     old_cap = None
-    rows = await page.query_selector_all("table tbody tr, table tr[role='row']")
-    for row in rows:
-        row_text = (await row.inner_text()).strip()
-        if country.lower() in row_text.lower():
-            # Нашли строку — ищем карандаш (синяя кнопка редактирования)
-            pencil = await row.query_selector("button.btn-primary, button.btn.btn-primary")
-            if pencil:
-                existing_pencil = pencil
-                # Пытаемся прочитать текущий cap из строки
-                tds = await row.query_selector_all("td")
-                for td in tds:
-                    td_text = (await td.inner_text()).strip()
-                    # Ищем число которое похоже на cap (не 0%, не "daily", не страну)
-                    if td_text.isdigit() and int(td_text) > 0:
-                        old_cap = td_text
+
+    if cap_row_data.get("found"):
+        old_cap = cap_row_data.get("oldCap")
+        log.info(f"Found cap row for {country}: old_cap={old_cap}")
+        # Ищем кнопку редактирования через Playwright
+        rows = await page.query_selector_all("table tr")
+        for row in rows:
+            row_text = (await row.inner_text()).strip()
+            if country.lower() in row_text.lower():
+                pencil = await row.query_selector(
+                    "a.btn-primary, button.btn-primary, a[class*='primary'], button[class*='primary']"
+                )
+                if pencil:
+                    existing_pencil = pencil
                 break
+
+    # Если задан delta — вычисляем новое значение
+    if delta is not None:
+        if old_cap is not None:
+            try:
+                cap_value = int(old_cap) + delta
+                log.info(f"Delta mode: {old_cap} + {delta} = {cap_value}")
+            except ValueError:
+                return f"❌ {country}: could not parse current cap '{old_cap}'."
+        else:
+            # Капы нет — сигнализируем вызывающему коду чтобы спросил пользователя
+            log.info(f"No existing cap for {country} — asking user to confirm creation")
+            return f"__NO_CAP__|{country}|{delta}"
+
 
     if existing_pencil:
         # Редактируем существующий кап
@@ -2201,7 +2316,32 @@ async def action_change_caps(broker_id: str, country: str, cap_value: int) -> st
             return f"⚠️ {country}: SAVE CAP button not found."
 
     else:
-        # Кап does not exist — создаём новый через ADD CAP
+        # Кап не найден
+        # Если delete_first — сразу удаляем капу без параметров (пользователь уже подтвердил)
+        if delete_first and affiliate_id:
+            deleted = await _delete_cap_without_params(page, country)
+            if deleted:
+                log.info(f"Deleted cap without params for {country} (user confirmed)")
+                await page.wait_for_timeout(1000)
+
+        # Если задан affiliate_id и не delete_first — проверяем есть ли капа без параметров
+        elif affiliate_id:
+            has_no_param_cap = await page.evaluate("""(countryQuery) => {
+                const rows = Array.from(document.querySelectorAll('table tr'))
+                    .filter(r => r.querySelector('td') !== null);
+                for (const row of rows) {
+                    if (!row.innerText.toLowerCase().includes(countryQuery.toLowerCase())) continue;
+                    const hasBadge = !!row.querySelector('span.badge-primary, span.badge.cursor-pointer');
+                    if (!hasBadge) return true;
+                }
+                return false;
+            }""", country)
+
+            if has_no_param_cap:
+                log.info(f"Found cap without params for {country} — asking user what to do")
+                return f"__HAS_NO_PARAM_CAP__|{country}|{cap_value}|{affiliate_id}"
+
+        # Создаём новый кап через ADD CAP
         try:
             add_btn = await page.wait_for_selector(
                 "button:has-text('ADD CAP'), a:has-text('ADD CAP'), "
@@ -2221,75 +2361,103 @@ async def action_change_caps(broker_id: str, country: str, cap_value: int) -> st
         await page.wait_for_timeout(500)
 
         # === Выбор страны в Caps ===
-        # Структура (из DevTools):
-        #   div.smart__dropdown → клик открывает список
-        #   input#country-8or__search-input → поле поиска (появляется после клика)
-        #   li.dropdown-item → элементы списка
-        #   повторный клик по div.smart__dropdown → закрывает список
+        # DevTools: Countries dropdown имеет id="country-8or" на div.smart__dropdown.
+        # Поле поиска: input#country-8or__search-input (появляется после клика).
+        # В модалке несколько smart__dropdown (Type, Interval, Timezone, Countries)
+        # поэтому таргетируем именно #country-8or, а не первый попавшийся.
         try:
-            dropdown_toggle = await modal.query_selector(
-                ".smart__dropdown, [class*='smart__dropdown'], .smart__dropdown__input__element"
-            )
-            if not dropdown_toggle:
-                raise Exception("Countries dropdown trigger not found")
+            # Ищем Countries dropdown по id
+            dropdown_trigger = await page.query_selector("#country-8or")
+            if not dropdown_trigger:
+                # Fallback: последний smart__dropdown в модалке (Countries идёт последним)
+                all_dropdowns = await modal.query_selector_all(".smart__dropdown")
+                if all_dropdowns:
+                    dropdown_trigger = all_dropdowns[-1]
+                    log.info(f"Fallback: using last of {len(all_dropdowns)} smart__dropdowns")
+            if not dropdown_trigger:
+                raise Exception("Countries dropdown (#country-8or) not found")
 
-            await dropdown_toggle.click()
+            await dropdown_trigger.click()
+            await page.wait_for_timeout(500)
             log.info("Clicked countries dropdown")
 
-            # Ждём появления поля поиска — id содержит 'search-input'
-            # Используем wait_for_selector, не query_selector — иначе Vue не успевает
+            # Ждём поле поиска: input#country-8or__search-input
+            search_input = None
             try:
-                search_input = await page.wait_for_selector(
-                    "input[id*='search-input']", timeout=5000
+                await page.wait_for_function(
+                    "document.getElementById('country-8or__search-input') !== null",
+                    timeout=5000
                 )
+                search_input = await page.query_selector("#country-8or__search-input")
+                log.info("Search input found: #country-8or__search-input")
             except Exception:
-                search_input = None
-
-            if not search_input:
-                # Fallback — любой видимый text input внутри открытого дропдауна
                 try:
-                    search_input = await page.wait_for_selector(
-                        ".bg-white input[type='text'], [class*='dropdown__menu'] input[type='text']",
+                    await page.wait_for_function(
+                        "!!document.querySelector(\"input[id*='search-input']\")",
                         timeout=3000
                     )
+                    search_input = await page.query_selector("input[id*='search-input']")
+                    log.info("Search input found via id*=search-input fallback")
                 except Exception:
-                    search_input = None
-
-            log.info(f"Search input found: {search_input is not None}")
+                    log.info("Search input not found")
 
             if search_input:
                 await search_input.click(click_count=3)
-                await search_input.type(country, delay=50)
-                # Триггерим Vue фильтрацию
+                await search_input.fill(country)
                 await search_input.evaluate(
-                    "el => { el.dispatchEvent(new Event('input', {bubbles:true})); "
-                    "el.dispatchEvent(new Event('change', {bubbles:true})); }"
+                    "el => { el.dispatchEvent(new Event('input',{bubbles:true})); "
+                    "el.dispatchEvent(new Event('change',{bubbles:true})); }"
                 )
-                # Ждём пока список отфильтруется
+                # Ждём пока Vue отфильтрует список (< 10 элементов)
                 for _ in range(20):
                     await page.wait_for_timeout(200)
-                    cnt = await page.evaluate("() => document.querySelectorAll('li.dropdown-item').length")
+                    cnt = await page.evaluate(
+                        "() => document.querySelectorAll('#country-8or-list li, li.dropdown-item, li.flex-fill').length"
+                    )
                     if cnt < 10:
                         break
-                log.info(f"Typed '{country}', items after filter: {cnt}")
+                log.info(f"Typed: {country}")
+            else:
+                log.warning("Search input not found — keyboard fallback")
+                await page.keyboard.type(country, delay=60)
+                await page.wait_for_timeout(600)
 
-            # Кликаем по нужной стране
+            # Кликаем по стране в списке (ul#country-8or-list)
             country_selected = False
-            try:
-                await page.wait_for_selector("li.dropdown-item", timeout=5000)
-            except Exception:
-                pass
-
-            items = await page.query_selector_all("li.dropdown-item")
-            log.info(f"Dropdown items: {len(items)}")
-            for item in items:
-                txt = (await item.inner_text()).strip()
-                if country.lower() in txt.lower():
-                    await item.click()
-                    country_selected = True
-                    log.info(f"Country selected: {txt}")
-                    await page.wait_for_timeout(400)
-                    break
+            # Кликаем через JS evaluate — элемент не устаревает
+            country_selected = await page.evaluate("""(countryName) => {
+                const lists = [
+                    ...document.querySelectorAll('#country-8or-list li'),
+                    ...document.querySelectorAll('li.dropdown-item'),
+                    ...document.querySelectorAll('li.flex-fill'),
+                ];
+                for (const item of lists) {
+                    if (item.innerText.trim().toLowerCase().includes(countryName.toLowerCase())) {
+                        item.click();
+                        return item.innerText.trim();
+                    }
+                }
+                return null;
+            }""", country)
+            if country_selected:
+                log.info(f"Country selected via JS: {country_selected}")
+                country_selected = True
+                await page.wait_for_timeout(400)
+            else:
+                # Fallback — Playwright query прямо перед кликом
+                items = await page.query_selector_all("li.dropdown-item, li.flex-fill")
+                log.info(f"Dropdown items: {len(items)}")
+                for item in items:
+                    try:
+                        txt = (await item.inner_text()).strip()
+                        if country.lower() in txt.lower():
+                            await item.click()
+                            country_selected = True
+                            log.info(f"Country selected: {txt}")
+                            await page.wait_for_timeout(400)
+                            break
+                    except Exception:
+                        continue
 
             if not country_selected:
                 await _close_modal(page)
@@ -2299,11 +2467,13 @@ async def action_change_caps(broker_id: str, country: str, cap_value: int) -> st
             await _close_modal(page)
             return f"❌ Error selecting country: {e}"
 
-        # Закрываем дропдаун — повторный клик по тому же триггеру (как на скриншоте 6)
+        # Закрываем дропдаун — повторный клик по #country-8or
         try:
-            toggle_close = await modal.query_selector(
-                ".smart__dropdown, [class*='smart__dropdown'], .smart__dropdown__input__element"
-            )
+            toggle_close = await page.query_selector("#country-8or")
+            if not toggle_close:
+                all_dropdowns = await modal.query_selector_all(".smart__dropdown")
+                if all_dropdowns:
+                    toggle_close = all_dropdowns[-1]
             if toggle_close:
                 await toggle_close.click()
                 await page.wait_for_timeout(400)
@@ -2330,6 +2500,13 @@ async def action_change_caps(broker_id: str, country: str, cap_value: int) -> st
         await cap_input.type(str(cap_value))
         await page.wait_for_timeout(300)
 
+        # Добавляем параметр Affiliates если нужно
+        if affiliate_id:
+            modal = await page.query_selector(".modal-body, [role='dialog']")
+            if modal:
+                param_ok = await _add_affiliate_parameter(page, modal, affiliate_id)
+                log.info(f"Affiliate parameter added: {param_ok}")
+
         # Сохраняем
         try:
             save_btn = await page.wait_for_selector(
@@ -2339,10 +2516,399 @@ async def action_change_caps(broker_id: str, country: str, cap_value: int) -> st
             )
             await save_btn.click()
             await page.wait_for_timeout(1000)
-            return f"✅ {country}: cap created: {cap_value}"
+            aff_info = f" (aff {affiliate_id})" if affiliate_id else ""
+            return f"✅ {country}: cap created: {cap_value}{aff_info}"
         except Exception:
             await _close_modal(page)
             return f"⚠️ {country}: SAVE CAP button not found."
+
+
+
+async def action_get_caps(broker_id: str, countries: list, affiliate_id: str = None) -> str:
+    """Получить текущие капы брокера для указанных стран."""
+    page = await get_page()
+
+    base_path = await find_and_open_broker(page, broker_id)
+    if not base_path:
+        return f"❌ Broker '{broker_id}' not found."
+
+    caps_url = f"{CRM_URL.rstrip('/')}{base_path}/caps"
+    await page.goto(caps_url, wait_until="domcontentloaded", timeout=30000)
+    # Ждём появления таблицы или кнопки ADD CAP
+    try:
+        await page.wait_for_selector("table, button:has-text('ADD CAP')", timeout=10000)
+    except Exception:
+        pass
+    await page.wait_for_timeout(1500)
+
+
+    # Читаем всю таблицу капов включая Attributes
+    # Структура: Interval | Type | Filled(0/20+%) | Countries | Attributes | Actions
+    # Кликаем по всем бейджам "N parameters" чтобы Vue отрендерил детали
+    await page.evaluate(
+        "() => {"
+        " var badges = document.querySelectorAll('span.badge.cursor-pointer.badge-primary');"
+        " for (var i = 0; i < badges.length; i++) { badges[i].click(); }"
+        "}"
+    )
+    await page.wait_for_timeout(800)
+
+    rows_data = await page.evaluate(
+        "() => {"
+        " var result = [];"
+        " var rows = document.querySelectorAll('table tbody tr, table tr');"
+        " for (var i = 0; i < rows.length; i++) {"
+        "  var tds = rows[i].querySelectorAll('td');"
+        "  if (tds.length < 3) continue;"
+        "  var interval = tds[0].innerText.trim();"
+        "  var tp = tds[1].innerText.trim();"
+        "  var raw = tds[2].innerText.trim();"
+        "  var filled = raw;"
+        "  var nl = String.fromCharCode(10); var pts = raw.split(nl);"
+        "  for (var p = 0; p < pts.length; p++) { var t = pts[p].trim(); if (t.indexOf('/') > 0) { filled = t; break; } }"
+        "  var ctry = tds[3] ? tds[3].innerText.trim() : '';"
+        "  var attrTd = tds[4] || null; var attr = ''; if (attrTd) {"
+        "   var detailRows = attrTd.querySelectorAll('.row.detail_distro, .detail_distro');"
+        "   if (detailRows.length > 0) {"
+        "    for (var d = 0; d < detailRows.length; d++) {"
+        "     var paramDivs = detailRows[d].querySelectorAll('.parameter');"
+        "     var dparts = []; for (var p2 = 0; p2 < paramDivs.length; p2++) { dparts.push(paramDivs[p2].innerText.trim()); }"
+        "     if (dparts.length > 0) attr += dparts.join('  ');"
+        "    }"
+        "   } else { attr = attrTd.innerText.trim(); }"
+        "  }"
+        "  if (interval && tp && filled) result.push({interval:interval, type:tp, filled:filled, countries:ctry, attributes:attr});"
+        " }"
+        " return result;"
+        "}"
+    )
+    # Диагностика: показываем сырой HTML таблицы если данные пустые
+    if not rows_data:
+        debug_info = await page.evaluate(
+            "() => {"
+            " var t = document.querySelector('table');"
+            " if (!t) return 'NO TABLE';"
+            " var rows = t.querySelectorAll('tr');"
+            " var out = 'rows=' + rows.length + ' | ';"
+            " for (var i = 0; i < Math.min(3, rows.length); i++) {"
+            "  out += '[' + rows[i].innerText.trim().substring(0, 80) + '] ';"
+            " }"
+            " return out;"
+            "}"
+        )
+        log.info(f"Caps table debug: {debug_info}")
+
+    if not rows_data:
+        return f"❌ Broker {broker_id} has no caps."
+
+    filter_all = not countries or "all" in [c.lower() for c in countries]
+
+    lines = []
+    for row in rows_data:
+        country_cell = row.get("countries", "")
+        attrs = row.get("attributes", "")
+
+        # Фильтр по стране
+        if not filter_all:
+            if not any(c.lower() in country_cell.lower() for c in countries):
+                continue
+
+        # Фильтр по аффилиату если указан
+        if affiliate_id:
+            if str(affiliate_id) not in attrs:
+                continue
+
+        filled   = row.get("filled", "?")
+        interval = row.get("interval", "").lower()
+        cap_type = row.get("type", "").lower()
+        country_label = country_cell if country_cell else "all countries"
+        # attrs может содержать "1 parameters\nAffiliates *127" — убираем строку с "parameters"
+        attr_lines = [l.strip() for l in attrs.split("\n") if l.strip() and "parameters" not in l.lower()]
+        aff_info = " | " + ", ".join(attr_lines) if attr_lines else ""
+        lines.append(f"• {country_label}: {filled}{aff_info}")
+
+    if not lines:
+        no_aff = f" for aff {affiliate_id}" if affiliate_id else ""
+        return f"❌ No caps found for {', '.join(countries)}{no_aff}."
+
+    return "\n".join(lines)
+
+
+async def _delete_cap_without_params(page, country: str) -> bool:
+    """Удалить капу без параметров для указанной страны. Возвращает True если удалено."""
+    # Ищем строку с нужной страной И без параметров (нет badge.badge-primary)
+    deleted = await page.evaluate("""(countryQuery) => {
+        const rows = Array.from(document.querySelectorAll('table tr'))
+            .filter(r => r.querySelector('td') !== null);
+        for (const row of rows) {
+            // Проверяем страну
+            const countryText = row.innerText.toLowerCase();
+            if (!countryText.includes(countryQuery.toLowerCase())) continue;
+            // Проверяем что нет параметров (badge)
+            const hasBadge = !!row.querySelector('span.badge-primary, span.badge.cursor-pointer');
+            if (hasBadge) continue;
+            // Нашли — кликаем красную кнопку
+            const deleteBtn = row.querySelector('button.btn-danger, button.btn.btn-danger');
+            if (deleteBtn) {
+                deleteBtn.click();
+                return true;
+            }
+        }
+        return false;
+    }""", country)
+
+    if not deleted:
+        log.info(f"No cap without params found for {country} to delete")
+        return False
+
+    log.info(f"Clicked delete for cap without params: {country}")
+    await page.wait_for_timeout(600)
+
+    # Подтверждаем удаление — кнопка DELETE в модальном окне
+    try:
+        confirm_btn = await page.wait_for_selector(
+            "button.btn-ladda.btn-danger, .modal button.btn-danger, [role='dialog'] button.btn-danger",
+            timeout=4000
+        )
+        await confirm_btn.click()
+        await page.wait_for_timeout(1000)
+        log.info(f"Cap deleted for {country}")
+        return True
+    except Exception as e:
+        log.warning(f"Delete confirm button not found: {e}")
+        await page.keyboard.press("Escape")
+        return False
+
+
+async def _add_affiliate_parameter(page, modal, affiliate_id: str, close_dropdown: bool = True) -> bool:
+    """Добавить параметр Affiliates к капе. modal — элемент модального окна."""
+    # Нажимаем + ADD PARAMETER (синяя кнопка) через JS
+    try:
+        clicked = await page.evaluate("""() => {
+            // Ищем синюю кнопку ADD PARAMETER (не зелёную submit)
+            const btns = document.querySelectorAll('button');
+            for (const btn of btns) {
+                const txt = btn.innerText.trim();
+                if (txt.includes('ADD PARAMETER') && !btn.classList.contains('btn-success')) {
+                    btn.click();
+                    return true;
+                }
+            }
+            return false;
+        }""")
+        if not clicked:
+            log.warning("ADD PARAMETER button not found via JS")
+            return False
+        log.info("Clicked ADD PARAMETER via JS")
+        # Ждём пока Vue отрендерит строку с дропдауном Parameter
+        await page.wait_for_timeout(1500)
+    except Exception as e:
+        log.warning(f"ADD PARAMETER error: {e}")
+        return False
+
+    # Выбираем тип параметра — "Affiliates"
+    # Кликаем по внутреннему курсорному div smart__dropdown__input__element
+    try:
+        # Пробуем открыть Parameter dropdown несколько раз с паузами
+        items_count = 0
+        for attempt in range(5):
+            clicked = await page.evaluate("""() => {
+                // Вариант 1: по id
+                const byId = document.querySelector('#fiqwoar .smart__dropdown__input__element');
+                if (byId) { byId.click(); return 'by-id-inner'; }
+                const byId2 = document.querySelector('#fiqwoar');
+                if (byId2) { byId2.click(); return 'by-id'; }
+
+                // Вариант 2: по лейблу "Parameter" — ищем cursor-pointer div
+                const labels = document.querySelectorAll('label');
+                for (const lbl of labels) {
+                    if (lbl.innerText.trim().toLowerCase() === 'parameter') {
+                        const row = lbl.closest('.form-row, .form-group') || lbl.parentElement;
+                        // Ищем cursor-pointer (кликабельный inner div)
+                        const inner = row?.querySelector('[class*="cursor-pointer"]') ||
+                                      row?.querySelector('.smart__dropdown__input__element') ||
+                                      row?.querySelector('[class*="smart__dropdown"]');
+                        if (inner) { inner.click(); return 'by-label'; }
+                    }
+                }
+                // Вариант 3: любой only-dropdown smart__dropdown в модалке
+                const onlies = document.querySelectorAll('[class*="only-dropdown"] [class*="cursor-pointer"]');
+                if (onlies.length > 0) { onlies[0].click(); return 'by-only-dropdown'; }
+                return false;
+            }""")
+            log.info(f"Parameter dropdown click attempt {attempt+1}: {clicked}")
+            await page.wait_for_timeout(600)
+
+            items_count = await page.evaluate(
+                "() => document.querySelectorAll('li.flex-fill, li.dropdown-item').length"
+            )
+            if items_count > 0:
+                break
+            await page.wait_for_timeout(400)
+
+        log.info(f"Parameter dropdown items: {items_count}")
+
+        if items_count == 0:
+            log.warning("Parameter dropdown list did not appear after 5 attempts")
+            return False
+
+        selected = await page.evaluate("""() => {
+            const items = document.querySelectorAll('li.flex-fill, li.dropdown-item');
+            for (const item of items) {
+                const t = item.innerText.trim().toLowerCase();
+                if (t === 'affiliate' || t === 'affiliates') {
+                    item.click();
+                    return true;
+                }
+            }
+            return false;
+        }""")
+        if not selected:
+            log.warning("'Affiliate' not found in parameter list")
+            return False
+        # Ждём пока Vue отрендерит дропдаун аффов
+        try:
+            await page.wait_for_selector(
+                "label[for*='parameterValue'] ~ *, .smart__dropdown__min__width, [id*='search-input']",
+                timeout=3000
+            )
+        except Exception:
+            pass
+        await page.wait_for_timeout(600)
+        log.info("Selected parameter type: Affiliates")
+    except Exception as e:
+        log.warning(f"Error selecting parameter type: {e}")
+        return False
+
+    # Теперь появился дропдаун для выбора аффилиата
+    try:
+        # Открываем дропдаун аффов — ищем по лейблу "Affiliate"
+        await page.wait_for_timeout(400)
+        await page.evaluate("""() => {
+            const labels = document.querySelectorAll('label');
+            for (const lbl of labels) {
+                const t = lbl.innerText.trim().toLowerCase();
+                if (t === 'affiliate' || t === 'affiliates') {
+                    const row = lbl.closest('.form-row, .form-group');
+                    const inner = row?.querySelector('.smart__dropdown__input__element') ||
+                                  row?.querySelector('[class*="cursor-pointer"]') ||
+                                  row?.querySelector('[class*="smart__dropdown"]');
+                    if (inner) { inner.click(); return; }
+                }
+            }
+        }""")
+        await page.wait_for_timeout(600)
+
+        # Search input аффов — берём последний видимый
+        all_search_inputs = await page.evaluate("""() => {
+            const inputs = document.querySelectorAll('input[id*="search-input"], input[id*="search"]');
+            return Array.from(inputs)
+                .filter(el => el.offsetParent !== null)
+                .map(el => ({id: el.id, value: el.value}));
+        }""")
+        log.info(f"Visible search inputs: {all_search_inputs}")
+
+        aff_inp = None
+        all_visible = await page.query_selector_all('input[id*="search-input"], input[id*="search"]')
+        for inp in reversed(all_visible):
+            if await inp.is_visible():
+                aff_inp = inp
+                break
+
+        if aff_inp:
+            inp_id = await aff_inp.get_attribute("id")
+            log.info(f"Aff search input: {inp_id}")
+            await aff_inp.click()
+            # Устанавливаем значение через нативный Vue-совместимый способ
+            await aff_inp.evaluate(f"""el => {{
+                const setter = Object.getOwnPropertyDescriptor(
+                    window.HTMLInputElement.prototype, 'value').set;
+                setter.call(el, '{affiliate_id}');
+                el.dispatchEvent(new Event('input', {{bubbles: true}}));
+                el.dispatchEvent(new KeyboardEvent('keyup', {{bubbles: true}}));
+            }}""")
+            # Ждём пока Vue отфильтрует список
+            for _ in range(20):
+                await page.wait_for_timeout(200)
+                cnt_check = await page.evaluate(
+                    "() => document.querySelectorAll('li.flex-fill, li.dropdown-item').length"
+                )
+                if cnt_check > 0:
+                    break
+            await page.wait_for_timeout(200)
+        else:
+            log.warning("Aff search input not found via Playwright")
+
+        cnt = await page.evaluate(
+            "() => document.querySelectorAll('li.flex-fill, li.dropdown-item').length"
+        )
+        log.info(f"Affiliate items after filter: {cnt}")
+
+        selected_aff = await page.evaluate("""(affId) => {
+            const items = document.querySelectorAll('li.flex-fill, li.dropdown-item');
+            for (const item of items) {
+                const txt = item.innerText.trim();
+                if (txt.includes('(' + affId + ')') ||
+                    txt.startsWith(affId + ' ') ||
+                    txt.startsWith('*' + affId) ||
+                    txt === affId) {
+                    item.click();
+                    return txt;
+                }
+            }
+            if (items.length > 0) {
+                const first = items[0].innerText.trim();
+                items[0].click();
+                return 'fallback:' + first;
+            }
+            return null;
+        }""", str(affiliate_id))
+
+        if not selected_aff:
+            log.warning(f"Affiliate {affiliate_id} not found in list (items={cnt})")
+            return False
+        log.info(f"Selected affiliate: {selected_aff}")
+        await page.wait_for_timeout(300)
+
+        # Закрываем дропдаун аффов — только для caps
+        if close_dropdown:
+            await page.evaluate("""() => {
+                const labels = document.querySelectorAll('label');
+                for (const lbl of labels) {
+                    if (lbl.innerText.trim().toLowerCase() === 'affiliates') {
+                        const row = lbl.closest('.form-row, .form-group');
+                        const inner = row?.querySelector('.smart__dropdown__input__element') ||
+                                      row?.querySelector('[class*="cursor-pointer"]') ||
+                                      row?.querySelector('[class*="smart__dropdown"]');
+                        if (inner) { inner.click(); return; }
+                    }
+                }
+            }""")
+            await page.wait_for_timeout(200)
+
+    except Exception as e:
+        log.warning(f"Error selecting affiliate: {e}")
+        return False
+
+    # Нажимаем зелёную кнопку ADD PARAMETER (подтверждение) через JS
+    clicked_green = await page.evaluate("""() => {
+        const btns = document.querySelectorAll('button');
+        for (const btn of btns) {
+            if (btn.innerText.trim().includes('ADD PARAMETER') &&
+                (btn.classList.contains('btn-success') || btn.classList.contains('btn-ladda'))) {
+                btn.click();
+                return true;
+            }
+        }
+        return false;
+    }""")
+    if clicked_green:
+        await page.wait_for_timeout(800)
+        log.info("Clicked green ADD PARAMETER via JS")
+        return True
+    else:
+        log.warning("Green ADD PARAMETER button not found")
+        return False
 
 
 # ══════════════════════════════════════════
@@ -2437,7 +3003,11 @@ def build_confirm_text(action: dict) -> str:
         brokers = ", ".join(str(b) for b in action.get("broker_ids", []))
         cr_list = action.get("country_revenues", [])
         if cr_list:
-            lines = "\n".join(f"  • {cr['country']}: ${cr['amount']}" for cr in cr_list)
+            lines = "\n".join(
+                f"  • {cr['country']}: ${cr['amount']}" +
+                (f" (aff {cr['affiliate_id']})" if cr.get('affiliate_id') else "")
+                for cr in cr_list
+            )
         else:
             country = action.get("countries", ["all"])[0]
             amount = action.get("amount", "?")
@@ -2470,7 +3040,13 @@ def build_confirm_text(action: dict) -> str:
             countries = action.get("countries", [])
             cap_val = action.get("caps", "?")
             cc_list = [{"country": c, "cap": cap_val} for c in countries]
-        lines = "\n".join(f"  • {cc['country']}: {cc['cap']}" for cc in cc_list)
+        def _cap_line(cc):
+            aff = f" (aff {cc['affiliate_id']})" if cc.get('affiliate_id') else ""
+            if cc.get('delta') is not None:
+                sign = "+" if int(cc['delta']) >= 0 else ""
+                return f"  • {cc['country']}: {sign}{cc['delta']}{aff}"
+            return f"  • {cc['country']}: {cc.get('cap', '?')}{aff}"
+        lines = "\n".join(_cap_line(cc) for cc in cc_list)
         return (
             f"📋 *Confirmation required*\n\n"
             f"Action: change cap\n"
@@ -2529,6 +3105,15 @@ async def _execute_get_task(bot, chat_id: int, action: dict, text: str):
                 result = await action_get_hours(str(bid), action.get("countries", ["all"]))
                 alog.update_action(lid, "success" if "❌" not in result else "error", result[:200])
                 await bot.send_message(chat_id, f"*Broker {escape_md(str(bid))}:*\n{escape_md(result)}", parse_mode="Markdown")
+
+        elif a == "get_caps":
+            for bid in action.get("broker_ids", []):
+                lid = alog.log_action("get_caps", str(bid),
+                                      ", ".join(action.get("countries", ["all"])), "pending", user_command=text)
+                result = await action_get_caps(str(bid), action.get("countries", ["all"]),
+                                                   affiliate_id=action.get("affiliate_id"))
+                alog.update_action(lid, "success" if "❌" not in result else "error", result[:200])
+                await bot.send_message(chat_id, f"*Caps {escape_md(str(bid))}:*\n{escape_md(result)}", parse_mode="Markdown")
 
         alog.set_status("last_action", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
@@ -2710,7 +3295,8 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                         sub_msg = await action_add_revenue(
                             broker_id=str(broker_id),
                             country=cr.get("country", "all"),
-                            amount=str(cr.get("amount", ""))
+                            amount=str(cr.get("amount", "")),
+                            affiliate_id=str(cr["affiliate_id"]) if cr.get("affiliate_id") else None
                         )
                         sub_results.append(sub_msg)
                     msg = "\n".join(sub_results)
@@ -2750,12 +3336,76 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                 else:
                     sub_results = []
                     for cc in cc_list:
+                        delta_val = cc.get("delta")
+                        cap_val   = cc.get("cap")
+                        delta_val  = cc.get("delta")
+                        cap_val    = cc.get("cap")
+                        aff_id_val   = cc.get("affiliate_id")
+                        delete_first = cc.get("_delete_first", False)
                         sub_msg = await action_change_caps(
                             broker_id=str(broker_id),
                             country=cc.get("country", ""),
-                            cap_value=int(cc.get("cap", 0))
+                            cap_value=int(cap_val) if cap_val is not None else 0,
+                            delta=int(delta_val) if delta_val is not None else None,
+                            affiliate_id=str(aff_id_val) if aff_id_val is not None else None,
+                            delete_first=delete_first,
                         )
-                        sub_results.append(sub_msg)
+                        # Есть капа без параметров — спрашиваем удалить или оставить
+                        if sub_msg.startswith("__HAS_NO_PARAM_CAP__"):
+                            _, hnp_country, hnp_cap, hnp_aff = sub_msg.split("|")
+                            kb = [[
+                                InlineKeyboardButton("🗑 Delete & recreate", callback_data="confirm_delete_cap"),
+                                InlineKeyboardButton("➕ Keep & add new", callback_data="confirm"),
+                            ]]
+                            # Сохраняем оба варианта действий в pending
+                            # confirm → просто создать новую (без удаления)
+                            # confirm_delete_cap → сначала удалить, потом создать
+                            create_action = {
+                                "action": "change_caps",
+                                "broker_ids": [str(broker_id)],
+                                "country_caps": [{"country": hnp_country, "cap": int(hnp_cap), "affiliate_id": hnp_aff}],
+                            }
+                            delete_and_create_action = {
+                                "action": "change_caps",
+                                "broker_ids": [str(broker_id)],
+                                "country_caps": [{"country": hnp_country, "cap": int(hnp_cap), "affiliate_id": hnp_aff, "_delete_first": True}],
+                            }
+                            sent = await bot.send_message(
+                                chat_id,
+                                f"⚠️ *{hnp_country}* already has a cap without parameters.\nWhat should I do?",
+                                parse_mode="Markdown",
+                                reply_markup=InlineKeyboardMarkup(kb)
+                            )
+                            # Сохраняем оба варианта — callback_data определит какой использовать
+                            pending[(chat_id, sent.message_id)] = {
+                                "confirm": create_action,
+                                "confirm_delete_cap": delete_and_create_action,
+                            }
+                            sub_results.append(f"⚠️ {hnp_country}: cap without params exists — asked user")
+
+                        # Если cap не найден — спрашиваем пользователя
+                        elif sub_msg.startswith("__NO_CAP__"):
+                            no_country, no_delta = sub_msg.split("|")[1], sub_msg.split("|")[2]
+                            create_action = {
+                                "action": "change_caps",
+                                "broker_ids": [str(broker_id)],
+                                "country_caps": [{"country": no_country, "cap": int(no_delta)}],
+                            }
+                            kb = [[
+                                InlineKeyboardButton(f"✅ Create cap {no_delta}", callback_data="confirm"),
+                                InlineKeyboardButton("❌ Cancel", callback_data="cancel"),
+                            ]]
+                            sent = await bot.send_message(
+                                chat_id,
+                                f"⚠️ *{no_country}* has no cap yet.\n"
+                                f"Create new cap: *{no_delta}*?",
+                                parse_mode="Markdown",
+                                reply_markup=InlineKeyboardMarkup(kb)
+                            )
+                            pending[(chat_id, sent.message_id)] = create_action
+                            sub_results.append(f"⚠️ {no_country}: no existing cap — asked for confirmation")
+                        else:
+                            sub_results.append(sub_msg)
                     msg = "\n".join(sub_results)
             else:
                 msg = f"⚠️ Действие '{a}' is not supported yet."
@@ -2773,13 +3423,27 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
             alog.update_action(lid, status, res_text[:200])
         alog.set_status("last_action", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
-        await bot.send_message(chat_id, "\n\n".join(results) or "✅ Done.", parse_mode="Markdown")
+        msg_text = "\n\n".join(results) or "✅ Done."
+        for attempt in range(3):
+            try:
+                await bot.send_message(chat_id, msg_text, parse_mode="Markdown")
+                break
+            except Exception as send_err:
+                log.warning(f"Send attempt {attempt+1} failed: {send_err}")
+                if attempt < 2:
+                    await asyncio.sleep(3)
 
     except Exception as e:
         log.exception("Error executing action")
         for lid in log_ids:
             alog.update_action(lid, "error", str(e)[:200])
-        await bot.send_message(chat_id, f"❌ Error:\n`{escape_md(str(e))}`", parse_mode="Markdown")
+        for attempt in range(3):
+            try:
+                await bot.send_message(chat_id, f"❌ Error:\n`{escape_md(str(e))}`", parse_mode="Markdown")
+                break
+            except Exception:
+                if attempt < 2:
+                    await asyncio.sleep(3)
 
 
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2803,7 +3467,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         action["broker_ids"] = [str(action["affiliate_id"])]
 
     # Get-операции — выполняем без подтверждения, через очередь
-    if action.get("action") in ("get_prices", "get_broker_revenue", "get_affiliate_revenue", "get_hours"):
+    if action.get("action") in ("get_prices", "get_broker_revenue", "get_affiliate_revenue", "get_hours", "get_caps"):
         queue_size = _task_queue.qsize()
         if queue_size > 0:
             await update.message.reply_text(f"⏳ Queued, position #{queue_size + 1}…")
@@ -2854,10 +3518,22 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Cancelled. Nothing changed.")
         return
 
-    action = pending.pop(pending_key, None)
-    if not action:
+    stored = pending.pop(pending_key, None)
+    if not stored:
         await query.edit_message_text("❌ Command expired. Please resend.")
         return
+
+    # stored может быть dict с двумя вариантами (для confirm/confirm_delete_cap)
+    # или просто action
+    if isinstance(stored, dict) and "confirm" in stored and "confirm_delete_cap" in stored:
+        action = stored.get(query.data, stored.get("confirm"))
+    else:
+        action = stored
+
+    # Если выбрано удаление перед созданием — ставим флаг
+    if query.data == "confirm_delete_cap":
+        for cc in action.get("country_caps", []):
+            cc["_delete_first"] = True
 
     queue_size = _task_queue.qsize()
     if queue_size > 0:
