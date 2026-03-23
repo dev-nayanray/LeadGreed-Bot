@@ -385,7 +385,7 @@ def parse_command(text: str) -> dict:
         f"Команда: {text}"
     )
 
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=60.0)
+client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     resp = client.messages.create(
         model="claude-sonnet-4-20250514",
         max_tokens=4000,
