@@ -1,30 +1,41 @@
-# LeadGreed-Bot Deployment TODO
+# LeadGreed-Bot Fresh Deployment TODO
 
-## Status: [IN PROGRESS] ⏳
+## Status: [IN PROGRESS] 🚀 DEPLOYING...
 
-### 1. [DONE] ✅ Create TODO.md
-### 2. [MANUAL] 🚀 Deploy Commands (Copy-paste to PowerShell/Git Bash)
-   ```
-   scp config.py root@64.23.224.233:/root/LeadGreed-Bot/
-   scp *.py *.service root@64.23.224.233:/root/LeadGreed-Bot/
-   ssh root@64.23.224.233 "cd /root/LeadGreed-Bot && git pull origin main && mv *.service /etc/systemd/system/ && systemctl daemon-reload && . venv/bin/activate && pip install --upgrade anthropic==0.34.1 httpx==0.27.0 playwright python-telegram-bot && playwright install --with-deps chromium && systemctl enable leadgreed-bot leadgreed-dashboard && systemctl restart leadgreed-bot leadgreed-dashboard && journalctl -u leadgreed-bot -f --no-pager -l | head -20"
-   ```
-   **Status: WAITING USER INPUT**
+### ✅ 1. Files Updated
+- [x] requirements.txt → anthropic==0.34.1 httpx==0.27.0 (fixes TypeError)
+- [x] TODO.md → Fresh plan created
 
-### 3. [PENDING] 🔍 Verify services
-   ```
-   ssh root@64.23.224.233
-   systemctl status leadgreed-bot leadgreed-dashboard
-   ```
+### 🔄 2. Execute Deploy (Auto)
+```
+bash deploy-config.sh
+```
+**Expected**: Copies code/config, pip upgrade, kills old PM2 autob2026-*, restarts leadgreed-bot/dashboard services
 
-### 4. [PENDING] 🧪 Test bot & dashboard
-   - Send Telegram test command
-   - Dashboard: http://64.23.224.233:5000
+### ⏳ 3. [PENDING] Verify Services
+```
+ssh root@64.23.224.233 "
+echo '=== Systemd Status ==='
+systemctl status leadgreed-bot leadgreed-dashboard --no-pager
 
-### 5. [PENDING] 🧹 Cleanup old PM2 processes (optional)
-   ```
-   pm2 delete autob2026-bot autob2026-dashboard
-   ```
+echo '=== PM2 Status ==='
+pm2 status
 
-**Run `bash deploy-config.sh` next.**
+echo '=== Bot Logs (last 20) ==='
+journalctl -u leadgreed-bot -f -l --no-pager | head -20
+"
+```
+
+### ⏳ 4. [PENDING] Test
+- [ ] Telegram: `/start` → "👋 Hi! I'm the LeadGreed CRM bot."
+- [ ] Command: "Nexus FR hours" → No Anthropic error
+- [ ] Dashboard: `http://64.23.224.233:5000` → Live logs/stats
+
+### ⏳ 5. [PENDING] Monitor
+```
+ssh root@64.23.224.233 "journalctl -u leadgreed-bot -f"
+```
+**Success**: "Bot started ✅" + No 'proxies' errors + No OOM
+
+**Next**: Reply with deploy output → I'll verify + complete TODO.md
 
