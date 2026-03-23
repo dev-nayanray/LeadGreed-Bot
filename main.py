@@ -94,6 +94,7 @@ SYSTEM_PROMPT = """
 - get_broker_revenue   — узнать прайс брокера для страны
 - get_hours            — узнать текущие часы работы брокера для страны
 - change_caps          — изменить дневной лимит (cap) брокера для страны
+- lead_task            — комбинированная задача: поставить часы + капу одновременно (из лид-формы)
 - unknown              — команда непонятна
 
 Структура JSON (общая):
@@ -265,11 +266,21 @@ SYSTEM_PROMPT = """
 Правила разбора:
 - ISO код страны → переводи в полное название
 - ВАЖНО: В формате прайс-листа (строки вида `КОД ЧИСЛО`) любой 2-буквенный токен — это ВСЕГДА ISO код страны, даже если он совпадает со словами "ID", "IN", "IS", "NO", "IT", "TO" и т.д. Никогда не интерпретируй его как идентификатор или служебное слово. Примеры: "ID 1250" → {country: "Indonesia", amount: 1250}, "IN 900" → {country: "India", amount: 900}
-- Число → сумма прайса
+- Число (целое, без %) → сумма прайса (amount). Берём ПЕРВОЕ большое число (обычно 3-4 цифры) как amount.
 - $ — игнорируй
 - cpa / crg / тип сделки — игнорируй
+- Проценты (10%, 15%, 5% и т.д.) — ПОЛНОСТЬЮ ИГНОРИРУЙ, это комиссии, не относятся к прайсу
+- "deduct", "full deduct", "- N% deduct" — ПОЛНОСТЬЮ ИГНОРИРУЙ, это условия выплат
+- "test", "test tomorrow", "test today" — ПОЛНОСТЬЮ ИГНОРИРУЙ, это пометки менеджера
+- "tomorrow", "today" в контексте прайсов — ИГНОРИРУЙ (это когда прайс начнёт действовать, не наше дело)
 - Используй поле "country_revenues" — список объектов {country, amount}
-- "amount" должен быть числом (без $)
+- "amount" должен быть числом (без $ и без %)
+
+Примеры:
+  "Clickbait CRG / CZ 1450 10% - 10% deduct" → broker_ids: ["Clickbait CRG"], country_revenues: [{country: "Czech Republic", amount: 1450}]
+  "Fintrix CRG / 29 ES 1550 15% test tomorrow - 5% deduct" → broker_ids: ["Fintrix CRG"], affiliate_id: "29", country_revenues: [{country: "Spain", amount: 1550}]
+  "Theta Holding / NL 1650$ CPA" → broker_ids: ["Theta Holding"], country_revenues: [{country: "Netherlands", amount: 1650}]
+  "28 price for CRG tomorrow / CZ 1200 10% - full deduct" → affiliate_id: "28", action: "add_affiliate_revenue", country_revenues: [{country: "Czech Republic", amount: 1200}]
 
 Пример:
   "добавь прайс для Marsi cpa / FR 1300$ cpa / ES 1500$ cpa"
@@ -291,20 +302,22 @@ SYSTEM_PROMPT = """
 
 Правила разбора:
 - Первая строка содержит метаданные. Разбирай так:
-  • Числа в начале (17) — affiliate id, ИГНОРИРУЙ
+  • Числа в начале (17) — affiliate id
   • ISO коды стран (CA, DE, BR...) — переводи в полное название → country
   • Языки (EN, RU, PL...) — ИГНОРИРУЙ (это язык деска, не страна)
-  • Тип сделки (CPA, CRG) — ИГНОРИРУЙ пока
+  • Тип сделки (CPA, CRG) — запомни тип, используй для определения нужен ли affiliate_id в капе
   • "today" / "сегодня" → days_to_keep: [название сегодняшнего дня]
   • "tomorrow" / "завтра" → days_to_keep: [название завтрашнего дня]
   • Название дня (Monday, Saturday...) → days_to_keep: [этот день]
-- Вторая строка содержит брокера и часы:
+- Вторая строка содержит брокера, капу и часы:
   • Первое слово/фраза до числа — имя брокера → broker_ids
-  • "N cap" — лимит, ИГНОРИРУЙ пока
+  • "N cap" — лимит → country_caps: [{country, cap: N}]
   • HH:MM-HH:MM или HH:MM–HH:MM — часы работы → hours start/end
   • "00:00" в конце времени означает полночь — оставляй как "00:00"
   • gmt+N / UTC+N — часовой пояс, ИГНОРИРУЙ (CRM сам управляет таймзоной)
-- Итоговый action: "add_hours" если страна одна, days_to_keep = конкретный день
+- Если в сообщении есть И часы, И капа — используй action: "lead_task"
+- Если только часы (без "N cap") — используй action: "add_hours"
+- Если только капа (без HH:MM-HH:MM) — используй action: "change_caps"
 - skip_missing: НЕ используй для lead-формы, вместо этого используй "requested_day"
 - "requested_day" — конкретный день который запросил пользователь (например "Thursday", "Saturday").
   Если день не указан — оставляй "requested_day": null.
@@ -313,8 +326,40 @@ SYSTEM_PROMPT = """
   • день указан + weekend → только этот день
   • день не указан → рабочие дни (Пн–Пт) по умолчанию
 
-Пример:
-  "17 CA EN CRG today / Capitan 10 cap 17:00-00:00 gmt+2"  (сегодня четверг)
+ВАЖНО — правила для капы без affiliate_id:
+Следующие CRG-брокеры получают капу БЕЗ affiliate_id (поле affiliate_id НЕ добавлять в country_caps):
+Capitan, Legion, Fintrix CRG, Swin FR CRG, Swin FR CRG duplicate, Swin EN CRG, Avelux CRG, Clickbait CRG, Imperius, EMP, CMT, GLB, Capex, Helios CRG.
+Если тип сделки CRG и брокер из этого списка — НЕ добавляй affiliate_id в капу.
+Если тип сделки CPA или брокер НЕ из этого списка — добавляй affiliate_id из первой строки в country_caps.
+
+Пример 1 (CRG брокер — капа БЕЗ affiliate_id):
+  "225 FR CRG tomorrow / Capitan 15 cap 10:00-19:00 gmt+2"  (сегодня понедельник)
+→ {
+    "action": "lead_task",
+    "broker_ids": ["Capitan"],
+    "country_hours": [{"country": "France", "start": "10:00", "end": "19:00"}],
+    "country_caps": [{"country": "France", "cap": 15}],
+    "days_to_keep": ["Tuesday"],
+    "requested_day": "Tuesday",
+    "no_traffic": true,
+    "skip_missing": false
+  }
+
+Пример 2 (CPA брокер — капа С affiliate_id):
+  "225 FR CPA tomorrow / Nexus CPA 15 cap 10:00-19:00 gmt+2"  (сегодня понедельник)
+→ {
+    "action": "lead_task",
+    "broker_ids": ["Nexus CPA"],
+    "country_hours": [{"country": "France", "start": "10:00", "end": "19:00"}],
+    "country_caps": [{"country": "France", "cap": 15, "affiliate_id": "225"}],
+    "days_to_keep": ["Tuesday"],
+    "requested_day": "Tuesday",
+    "no_traffic": true,
+    "skip_missing": false
+  }
+
+Пример 3 (только часы, без капы):
+  "17 CA EN CRG today / Capitan 17:00-00:00 gmt+2"  (сегодня четверг)
 → {
     "action": "add_hours",
     "broker_ids": ["Capitan"],
@@ -3059,6 +3104,29 @@ def build_confirm_text(action: dict) -> str:
             f"Confirm?"
         )
 
+    if a == "lead_task":
+        brokers = ", ".join(str(b) for b in action.get("broker_ids", []))
+        # Hours info
+        ch_list = action.get("country_hours", [])
+        hours_lines = "\n".join(f"  • {ch['country']}: {ch['start']}–{ch['end']}" for ch in ch_list)
+        days = ", ".join(action.get("days_to_keep", ["Mon–Fri"]))
+        # Caps info
+        cc_list = action.get("country_caps", [])
+        def _cap_line_lt(cc):
+            aff = f" (aff {cc['affiliate_id']})" if cc.get('affiliate_id') else ""
+            return f"  • {cc['country']}: {cc.get('cap', '?')}{aff}"
+        caps_lines = "\n".join(_cap_line_lt(cc) for cc in cc_list)
+        return (
+            f"📋 *Confirmation required*\n\n"
+            f"Action: set hours + cap\n"
+            f"Brokers: `{brokers}`\n"
+            f"Hours:\n{hours_lines}\n"
+            f"Days: {days}\n"
+            f"Caps:\n{caps_lines}\n"
+            f"No-traffic: {'✅ yes' if action.get('no_traffic', True) else '❌ no'}\n\n"
+            f"Confirm?"
+        )
+
     return f"📋 Action: `{a}`\n\nConfirm?"
 
 
@@ -3411,6 +3479,113 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                         else:
                             sub_results.append(sub_msg)
                     msg = "\n".join(sub_results)
+
+            elif a == "lead_task":
+                # Комбинированная задача: сначала капа, потом часы
+                sub_results = []
+
+                # 1. Ставим капу
+                cc_list = action.get("country_caps", [])
+                for cc in cc_list:
+                    cap_val = cc.get("cap")
+                    aff_id_val = cc.get("affiliate_id")
+                    try:
+                        sub_msg = await action_change_caps(
+                            broker_id=str(broker_id),
+                            country=cc.get("country", ""),
+                            cap_value=int(cap_val) if cap_val is not None else 0,
+                            delta=None,
+                            affiliate_id=str(aff_id_val) if aff_id_val is not None else None,
+                            delete_first=False,
+                        )
+                        if sub_msg.startswith("__"):
+                            sub_msg = await action_change_caps(
+                                broker_id=str(broker_id),
+                                country=cc.get("country", ""),
+                                cap_value=int(cap_val) if cap_val is not None else 0,
+                                delta=None,
+                                affiliate_id=str(aff_id_val) if aff_id_val is not None else None,
+                                delete_first=True,
+                            )
+                        sub_results.append(f"🎯 Cap: {sub_msg}")
+                    except Exception as cap_err:
+                        sub_results.append(f"❌ Cap error: {cap_err}")
+
+                # 2. Ставим часы
+                country_hours_list = action.get("country_hours", [])
+                if country_hours_list:
+                    days_filter = action.get("days_to_keep", ["Monday","Tuesday","Wednesday","Thursday","Friday"])
+                    requested_day = action.get("requested_day", "")
+                    weekends = {"saturday", "sunday"}
+                    weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+                    req_day_lower = requested_day.lower() if requested_day else ""
+                    is_weekend_request = req_day_lower in weekends
+                    if not requested_day:
+                        is_weekend_request = False
+
+                    existing_countries = []
+                    try:
+                        page = await get_page()
+                        broker_base = await find_and_open_broker(page, str(broker_id))
+                        if broker_base:
+                            oh_url = f"{CRM_URL.rstrip('/')}{broker_base}/opening_hours"
+                            await page.goto(oh_url, wait_until="domcontentloaded", timeout=60000)
+                            existing_countries = await _scrape_countries_from_page(page)
+                    except Exception as e:
+                        log.warning(f"Failed to get existing countries: {e}")
+
+                    for ch in country_hours_list:
+                        country_name = ch.get("country", "")
+                        country_start = ch.get("start", "09:00")
+                        country_end = ch.get("end", "17:00")
+                        country_exists = any(country_name.lower() in ec.lower() for ec in existing_countries)
+
+                        try:
+                            if requested_day:
+                                if country_exists:
+                                    sub_msg = await action_edit_country_add_days(
+                                        broker_id=str(broker_id),
+                                        country=country_name,
+                                        start=country_start,
+                                        end=country_end,
+                                        no_traffic=action.get("no_traffic", True),
+                                        days_to_add=[requested_day]
+                                    )
+                                else:
+                                    new_days_filter = [requested_day] if is_weekend_request else weekdays
+                                    sub_msg = await action_add_country_hours(
+                                        broker_id=str(broker_id),
+                                        country=country_name,
+                                        start=country_start,
+                                        end=country_end,
+                                        no_traffic=action.get("no_traffic", True),
+                                        days_filter=new_days_filter
+                                    )
+                            else:
+                                if country_exists:
+                                    sub_msg = await action_change_hours(
+                                        broker_id=str(broker_id),
+                                        start=country_start,
+                                        end=country_end,
+                                        countries_filter=[country_name],
+                                        no_traffic=action.get("no_traffic", True),
+                                        days_filter=days_filter
+                                    )
+                                else:
+                                    sub_msg = await action_add_country_hours(
+                                        broker_id=str(broker_id),
+                                        country=country_name,
+                                        start=country_start,
+                                        end=country_end,
+                                        no_traffic=action.get("no_traffic", True),
+                                        days_filter=days_filter
+                                    )
+                            sub_results.append(f"🕐 Hours: {sub_msg}")
+                        except Exception as hours_err:
+                            sub_results.append(f"❌ Hours error: {hours_err}")
+
+                msg = "\n".join(sub_results)
+
             else:
                 msg = f"⚠️ Действие '{a}' is not supported yet."
 
