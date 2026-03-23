@@ -3152,7 +3152,7 @@ async def _execute_get_task(bot, chat_id: int, action: dict, text: str):
                     sub_msg = await action_get_broker_revenue(str(qid), qcountries)
                     sub_results.append(f"*Broker {escape_md(str(qid))}:*\n{escape_md(sub_msg)}")
                 alog.update_action(lid, "success" if "❌" not in sub_msg else "error", sub_msg[:200])
-            await bot.send_message(chat_id, "\n\n".join(sub_results), parse_mode="Markdown")
+            await bot.send_message(chat_id, "\n\n".join(sub_results), parse_mode="Markdown", disable_notification=True)
 
         elif a in ("get_broker_revenue", "get_affiliate_revenue"):
             if a == "get_broker_revenue":
@@ -3161,14 +3161,14 @@ async def _execute_get_task(bot, chat_id: int, action: dict, text: str):
                                           ", ".join(action.get("countries", [])), "pending", user_command=text)
                     result = await action_get_broker_revenue(str(bid), action.get("countries", []))
                     alog.update_action(lid, "success" if "❌" not in result else "error", result[:200])
-                    await bot.send_message(chat_id, f"*Broker {escape_md(str(bid))}:*\n{escape_md(result)}", parse_mode="Markdown")
+                    await bot.send_message(chat_id, f"*Broker {escape_md(str(bid))}:*\n{escape_md(result)}", parse_mode="Markdown", disable_notification=True)
             else:
                 aff_id = str(action.get("affiliate_id") or action.get("broker_ids", ["?"])[0])
                 lid = alog.log_action("get_affiliate_revenue", aff_id,
                                       ", ".join(action.get("countries", [])), "pending", user_command=text)
                 result = await action_get_affiliate_revenue(aff_id, action.get("countries", []))
                 alog.update_action(lid, "success" if "❌" not in result else "error", result[:200])
-                await bot.send_message(chat_id, f"*Aff {escape_md(aff_id)}:*\n{escape_md(result)}", parse_mode="Markdown")
+                await bot.send_message(chat_id, f"*Aff {escape_md(aff_id)}:*\n{escape_md(result)}", parse_mode="Markdown", disable_notification=True)
 
         elif a == "get_hours":
             for bid in action.get("broker_ids", []):
@@ -3176,7 +3176,7 @@ async def _execute_get_task(bot, chat_id: int, action: dict, text: str):
                                       ", ".join(action.get("countries", ["all"])), "pending", user_command=text)
                 result = await action_get_hours(str(bid), action.get("countries", ["all"]))
                 alog.update_action(lid, "success" if "❌" not in result else "error", result[:200])
-                await bot.send_message(chat_id, f"*Broker {escape_md(str(bid))}:*\n{escape_md(result)}", parse_mode="Markdown")
+                await bot.send_message(chat_id, f"*Broker {escape_md(str(bid))}:*\n{escape_md(result)}", parse_mode="Markdown", disable_notification=True)
 
         elif a == "get_caps":
             for bid in action.get("broker_ids", []):
@@ -3185,13 +3185,13 @@ async def _execute_get_task(bot, chat_id: int, action: dict, text: str):
                 result = await action_get_caps(str(bid), action.get("countries", ["all"]),
                                                    affiliate_id=action.get("affiliate_id"))
                 alog.update_action(lid, "success" if "❌" not in result else "error", result[:200])
-                await bot.send_message(chat_id, f"*Caps {escape_md(str(bid))}:*\n{escape_md(result)}", parse_mode="Markdown")
+                await bot.send_message(chat_id, f"*Caps {escape_md(str(bid))}:*\n{escape_md(result)}", parse_mode="Markdown", disable_notification=True)
 
         alog.set_status("last_action", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
     except Exception as e:
         log.exception(f"Error in get task: {e}")
-        await bot.send_message(chat_id, f"❌ Error: `{escape_md(str(e))}`", parse_mode="Markdown")
+        await bot.send_message(chat_id, f"❌ Error: `{escape_md(str(e))}`", parse_mode="Markdown", disable_notification=True)
 
 
 async def _execute_confirmed_task(bot, chat_id: int, action: dict):
@@ -3446,7 +3446,8 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                 chat_id,
                                 f"⚠️ *{hnp_country}* already has a cap without parameters.\nWhat should I do?",
                                 parse_mode="Markdown",
-                                reply_markup=InlineKeyboardMarkup(kb)
+                                reply_markup=InlineKeyboardMarkup(kb),
+                                disable_notification=True
                             )
                             # Сохраняем оба варианта — callback_data определит какой использовать
                             pending[(chat_id, sent.message_id)] = {
@@ -3472,7 +3473,8 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                 f"⚠️ *{no_country}* has no cap yet.\n"
                                 f"Create new cap: *{no_delta}*?",
                                 parse_mode="Markdown",
-                                reply_markup=InlineKeyboardMarkup(kb)
+                                reply_markup=InlineKeyboardMarkup(kb),
+                                disable_notification=True
                             )
                             pending[(chat_id, sent.message_id)] = create_action
                             sub_results.append(f"⚠️ {no_country}: no existing cap — asked for confirmation")
@@ -3605,7 +3607,7 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
         msg_text = "\n\n".join(results) or "✅ Done."
         for attempt in range(3):
             try:
-                await bot.send_message(chat_id, msg_text, parse_mode="Markdown")
+                await bot.send_message(chat_id, msg_text, parse_mode="Markdown", disable_notification=True)
                 break
             except Exception as send_err:
                 log.warning(f"Send attempt {attempt+1} failed: {send_err}")
@@ -3618,7 +3620,7 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
             alog.update_action(lid, "error", str(e)[:200])
         for attempt in range(3):
             try:
-                await bot.send_message(chat_id, f"❌ Error:\n`{escape_md(str(e))}`", parse_mode="Markdown")
+                await bot.send_message(chat_id, f"❌ Error:\n`{escape_md(str(e))}`", parse_mode="Markdown", disable_notification=True)
                 break
             except Exception:
                 if attempt < 2:
@@ -3627,13 +3629,14 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
 
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
 
     # Whitelist — чужие полностью игнорируются (без ответа)
-    if chat_id not in ALLOWED_USERS:
+    if user_id not in ALLOWED_USERS:
         return
 
     text = update.message.text.strip()
-    await update.message.reply_text("🤔 Analyzing command...")
+    await update.message.reply_text("🤔 Analyzing command...", disable_notification=True)
 
     action = await asyncio.get_event_loop().run_in_executor(None, parse_command, text)
 
@@ -3649,11 +3652,22 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action.get("action") in ("get_prices", "get_broker_revenue", "get_affiliate_revenue", "get_hours", "get_caps"):
         queue_size = _task_queue.qsize()
         if queue_size > 0:
-            await update.message.reply_text(f"⏳ Queued, position #{queue_size + 1}…")
+            await update.message.reply_text(f"⏳ Queued, position #{queue_size + 1}…", disable_notification=True)
         else:
             emoji = "🔍" if action.get("action") != "get_hours" else "🕐"
-            await update.message.reply_text(f"{emoji} Looking up...")
+            await update.message.reply_text(f"{emoji} Looking up...", disable_notification=True)
         await enqueue(_execute_get_task, context.bot, chat_id, action, text)
+        return
+
+    # Прайсы — выполняем без подтверждения, через очередь
+    if action.get("action") in ("add_revenue", "add_affiliate_revenue"):
+        queue_size = _task_queue.qsize()
+        if queue_size > 0:
+            await update.message.reply_text(f"⏳ Queued, position #{queue_size + 1}…", disable_notification=True)
+        else:
+            await update.message.reply_text("💰 Setting price...", disable_notification=True)
+        action["_user_command"] = text
+        await enqueue(_execute_confirmed_task, context.bot, chat_id, action)
         return
 
     if action.get("action") == "unknown" or not action.get("broker_ids"):
@@ -3663,7 +3677,8 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• 'Nexus FR 10:00-18:00' — set hours\n"
             "• 'wh Nexus FR' — check hours\n"
             "• 'Nexus FR price' — check price\n"
-            "• 'Legion DE cap 20' — set cap"
+            "• 'Legion DE cap 20' — set cap",
+            disable_notification=True
         )
         return
 
@@ -3675,7 +3690,8 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sent = await update.message.reply_text(
         build_confirm_text(action),
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(kb)
+        reply_markup=InlineKeyboardMarkup(kb),
+        disable_notification=True
     )
     # Ключ = (chat_id, message_id) — каждая команда получает свой слот
     action["_user_command"] = text  # сохраняем для логирования
@@ -3686,10 +3702,11 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
     pending_key = (chat_id, query.message.message_id)
 
     # Whitelist
-    if chat_id not in ALLOWED_USERS:
+    if user_id not in ALLOWED_USERS:
         return
 
     if query.data == "cancel":
@@ -3724,7 +3741,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id not in ALLOWED_USERS:
+    if update.effective_user.id not in ALLOWED_USERS:
         return
     await update.message.reply_text(
         "👋 Hi! I'm the LeadGreed CRM bot.\n\n"
@@ -3732,7 +3749,8 @@ async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Set broker working hours\n"
         "• Look up hours and prices\n"
         "• Set caps and prices\n\n"
-        "Send a command — I understand 😊"
+        "Send a command — I understand 😊",
+        disable_notification=True
     )
 
 
