@@ -136,6 +136,7 @@ SYSTEM_PROMPT = """
 - no_traffic по умолчанию true
 - Названия стран могут быть написаны с опечатками, на русском, или как ISO код (2 буквы). Всегда переводи в английское полное название.
 - ВАЖНО: Никогда не склеивай имя брокера/аффилиата и страну в одно поле. ISO коды (DE, FR, ES...) и названия стран (германия, испания...) — это ВСЕГДА countries, а не часть broker_ids. Пример: "легион де" → broker_ids: ["Legion"], countries: ["Germany"], а НЕ broker_ids: ["Legion DE"].
+- ВАЖНО: Имена брокеров могут состоять из НЕСКОЛЬКИХ слов, например: "Fintrix CRG", "Fintrix CPA", "Nexus CPA", "Nexus CRG", "Marsi cpa", "Legion CPA". Суффиксы CRG, CPA, CPL — это ТИП брокера, а НЕ страна и НЕ отдельный параметр. Всегда сохраняй полное имя брокера как одну строку в broker_ids. Примеры: "Fintrix CRG DE 15 cap" → broker_ids: ["Fintrix CRG"], country_caps: [{country: "Germany", cap: 15}]. "Nexus CPA FR 10:00-18:00" → broker_ids: ["Nexus CPA"], countries: ["France"].
 - Названия брокеров и аффилиатов могут быть написаны кириллицей — транслитерируй в латиницу. Примеры: "мн"→"MN", "нексус"→"Nexus", "марси"→"Marsi", "фара"→"Farah", "капитан"→"Capitan", "ройбис"→"RoiBees", "финтрикс"→"Fintrix". Общее правило транслитерации: м→M, н→N, к→K, с→S, р→R и т.д. Сохраняй регистр как в оригинальном названии если известно, иначе используй Title Case. Примеры: "белигия"→"Belgium", "аргентина"→"Argentina", "KE"→"Kenya", "NG"→"Nigeria", "DE"→"Germany", "UK"→"United Kingdom", "IT"→"Italy", "FR"→"France", "ES"→"Spain", "PL"→"Poland", "RO"→"Romania", "HU"→"Hungary", "CZ"→"Czech Republic", "PT"→"Portugal", "GR"→"Greece", "SE"→"Sweden", "NO"→"Norway", "FI"→"Finland", "DK"→"Denmark", "NL"→"Netherlands", "BE"→"Belgium", "AT"→"Austria", "CH"→"Switzerland", "TR"→"Turkey", "IL"→"Israel", "AE"→"United Arab Emirates", "SA"→"Saudi Arabia", "ZA"→"South Africa", "EG"→"Egypt", "MA"→"Morocco", "GH"→"Ghana", "TZ"→"Tanzania", "UG"→"Uganda", "ET"→"Ethiopia", "IN"→"India", "PK"→"Pakistan", "BD"→"Bangladesh", "ID"→"Indonesia", "TH"→"Thailand", "VN"→"Vietnam", "PH"→"Philippines", "MY"→"Malaysia", "SG"→"Singapore", "JP"→"Japan", "KR"→"Korea, Republic of", "CN"→"China", "AU"→"Australia", "NZ"→"New Zealand", "CA"→"Canada", "MX"→"Mexico", "CO"→"Colombia", "PE"→"Peru", "CL"→"Chile", "VE"→"Venezuela", "EC"→"Ecuador", "BO"→"Bolivia", "PY"→"Paraguay", "UY"→"Uruguay", "CR"→"Costa Rica", "DO"→"Dominican Republic", "GT"→"Guatemala", "HN"→"Honduras", "SV"→"El Salvador", "NI"→"Nicaragua", "PA"→"Panama", "CU"→"Cuba", "US"→"United States", "BR"→"Brazil", "AR"→"Argentina", "UA"→"Ukraine", "RU"→"Russia", "BY"→"Belarus", "KZ"→"Kazakhstan", "UZ"→"Uzbekistan", "AZ"→"Azerbaijan", "GE"→"Georgia", "AM"→"Armenia", "MD"→"Moldova", "LT"→"Lithuania", "LV"→"Latvia", "EE"→"Estonia", "BG"→"Bulgaria", "HR"→"Croatia", "RS"→"Serbia", "SK"→"Slovakia", "SI"→"Slovenia", "BA"→"Bosnia and Herzegovina", "AL"→"Albania", "MK"→"North Macedonia", "ME"→"Montenegro"
 - "завтра", "послезавтра" и т.д. переводи в название дня на английском (Monday/Tuesday/...)
 - Сегодняшняя дата и день будут переданы в запросе
@@ -190,6 +191,8 @@ SYSTEM_PROMPT = """
   • "уменьши капу легион де на 3" → {"action": "change_caps", "broker_ids": ["Legion"], "country_caps": [{"country": "Germany", "delta": -3}]}
   • "Nexus DE 15 cap ES 20 cap" → {"action": "change_caps", "broker_ids": ["Nexus"], "country_caps": [{"country": "Germany", "cap": 15}, {"country": "Spain", "cap": 20}]}
   • "капитан FR ES cap 10" → {"action": "change_caps", "broker_ids": ["Capitan"], "country_caps": [{"country": "France", "cap": 10}, {"country": "Spain", "cap": 10}]}
+  • "Fintrix CRG DE 15 cap" → {"action": "change_caps", "broker_ids": ["Fintrix CRG"], "country_caps": [{"country": "Germany", "cap": 15}]}
+  • "Nexus CPA FR cap 20" → {"action": "change_caps", "broker_ids": ["Nexus CPA"], "country_caps": [{"country": "France", "cap": 20}]}
   • "legion de 20 cap aff 127" → {"action": "change_caps", "broker_ids": ["Legion"], "country_caps": [{"country": "Germany", "cap": 20, "affiliate_id": "127"}]}
   • "поставь капу 15 легион де для аффа 127" → {"action": "change_caps", "broker_ids": ["Legion"], "country_caps": [{"country": "Germany", "cap": 15, "affiliate_id": "127"}]}
   Если в команде есть "aff N", "affiliate N", "аф N", "аффу N", "для аффа N" — добавляй поле "affiliate_id": "N" в country_caps.
@@ -202,6 +205,7 @@ SYSTEM_PROMPT = """
   • "legion de cap?" → {"action": "get_caps", "broker_ids": ["Legion"], "countries": ["Germany"]}
   • "check cap nexus fr es" → {"action": "get_caps", "broker_ids": ["Nexus"], "countries": ["France", "Spain"]}
   • "что за капа у capitan" → {"action": "get_caps", "broker_ids": ["Capitan"], "countries": ["all"]}
+  • "Fintrix CRG DE cap?" → {"action": "get_caps", "broker_ids": ["Fintrix CRG"], "countries": ["Germany"]}
   • "cap legion australia aff 28" → {"action": "get_caps", "broker_ids": ["Legion"], "countries": ["Australia"], "affiliate_id": "28"}
   • "какая капа легион австралия аф 28" → {"action": "get_caps", "broker_ids": ["Legion"], "countries": ["Australia"], "affiliate_id": "28"}
   Если страна не указана — countries: ["all"]. Если аф не указан — affiliate_id: null (показать все капы).
@@ -385,7 +389,7 @@ def parse_command(text: str) -> dict:
         f"Команда: {text}"
     )
 
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=60.0)
     resp = client.messages.create(
         model="claude-sonnet-4-20250514",
         max_tokens=4000,
