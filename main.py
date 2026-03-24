@@ -3662,7 +3662,13 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         has_time = bool(re.search(r'\d{1,2}:\d{2}\s*[-–]\s*\d{1,2}:\d{2}', text))
         if not (has_price_pattern or has_command or has_time):
             return
-    await update.message.reply_text("🤔 Analyzing command...", disable_notification=True)
+        # CPL — игнорируем полностью
+        if "cpl" in text.lower():
+            return
+
+    # В личке показываем статус, в группе — молчим до результата
+    if not is_group:
+        await update.message.reply_text("🤔 Analyzing command...", disable_notification=True)
 
     action = await asyncio.get_event_loop().run_in_executor(None, parse_command, text)
 
@@ -3679,19 +3685,17 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         queue_size = _task_queue.qsize()
         if queue_size > 0:
             await update.message.reply_text(f"⏳ Queued, position #{queue_size + 1}…", disable_notification=True)
-        else:
+        elif not is_group:
             emoji = "🔍" if action.get("action") != "get_hours" else "🕐"
             await update.message.reply_text(f"{emoji} Looking up...", disable_notification=True)
         await enqueue(_execute_get_task, context.bot, chat_id, action, text)
         return
 
-    # Прайсы — выполняем без подтверждения, через очередь
+    # Прайсы — выполняем без подтверждения, через очередь, без промежуточных сообщений
     if action.get("action") in ("add_revenue", "add_affiliate_revenue"):
         queue_size = _task_queue.qsize()
-        if queue_size > 0:
+        if queue_size > 0 and not is_group:
             await update.message.reply_text(f"⏳ Queued, position #{queue_size + 1}…", disable_notification=True)
-        else:
-            await update.message.reply_text("💰 Setting price...", disable_notification=True)
         action["_user_command"] = text
         await enqueue(_execute_confirmed_task, context.bot, chat_id, action)
         return
