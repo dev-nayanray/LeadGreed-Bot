@@ -3641,15 +3641,16 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # В личке — обрабатываем всё
     is_group = update.effective_chat.type in ("group", "supergroup")
     if is_group:
+        text_upper = text.upper()
+        # Паттерн 1: ISO код страны (2 заглавные буквы) + число 3-4 цифры (прайс)
+        has_price_pattern = bool(re.search(r'\b[A-Z]{2}\b', text_upper) and re.search(r'\b\d{3,4}\b', text))
+        # Паттерн 2: CRM-команды (cap, wh, price, hours)
         text_lower = text.lower()
-        has_number = any(c.isdigit() for c in text)
-        crm_keywords = ("cap", "price", "wh ", "hours", "прайс", "часы", "cpa", "crg",
-                        "кап", "лимит", "helios", "nexus", "fintrix", "capitan", "legion",
-                        "marsi", "clickbait", "imperius", "avelux", "swin", "emp", "cmt",
-                        "glb", "capex", "theta")
-        has_keyword = any(kw in text_lower for kw in crm_keywords)
-        # Нужно число + ключевое слово, иначе это обычная переписка
-        if not (has_number and has_keyword):
+        crm_commands = ("cap", "price", "wh ", "hours", "прайс", "часы", "кап", "лимит")
+        has_command = any(kw in text_lower for kw in crm_commands)
+        # Паттерн 3: время (HH:MM-HH:MM) — расписание
+        has_time = bool(re.search(r'\d{1,2}:\d{2}\s*[-–]\s*\d{1,2}:\d{2}', text))
+        if not (has_price_pattern or has_command or has_time):
             return
     await update.message.reply_text("🤔 Analyzing command...", disable_notification=True)
 
