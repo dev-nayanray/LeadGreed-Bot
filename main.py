@@ -150,6 +150,7 @@ SYSTEM_PROMPT = """
 - no_traffic по умолчанию true
 - Названия стран могут быть написаны с опечатками, на русском, или как ISO код (2 буквы). Всегда переводи в английское полное название.
 - ВАЖНО: Никогда не склеивай имя брокера/аффилиата и страну в одно поле. ISO коды (DE, FR, ES, HR, ID, NL, CZ...) и названия стран (германия, испания...) — это ВСЕГДА countries, а не часть broker_ids. Даже если ISO код стоит СРАЗУ после имени брокера без разделителя.
+- ВАЖНО: Если в сообщении указан числовой ID брокера (например "2251 - Fugazi CH - CRG"), ВСЕГДА используй числовой ID в broker_ids: ["2251"]. Числовой ID надёжнее имени. Форматы: "2251 - Fugazi", "2251-Fugazi", "#2251", "ID 2251". В multi_broker_task тоже используй числовой ID в broker_id если он указан.
   Примеры:
   • "MediaNow HR 1350" → broker_ids: ["MediaNow"], countries: ["Croatia"], amount: 1350. НЕ broker_ids: ["MediaNow HR"]!
   • "легион де" → broker_ids: ["Legion"], countries: ["Germany"]. НЕ broker_ids: ["Legion DE"]!
@@ -471,6 +472,7 @@ Capitan, Legion, Fintrix CRG, Swin FR CRG, Swin FR CRG duplicate, Swin EN CRG, S
 - Первая строка = заголовок: страна (ISO код) + тип (CRG/CPA) + день (today/tomorrow/название дня)
 - Строки с числами через / (123/122/28) — ID аффилиатов, ИГНОРИРУЙ
 - Строки с именем брокера + "N cap" + "HH:MM-HH:MM" — поставить капу и часы
+- Если перед именем брокера указан числовой ID (например "2251 - Fugazi CH - CRG"), используй ID: broker_id: "2251"
 - "cap total" или просто "cap" без "aff" — капа БЕЗ affiliate_id
 - Строка "PAUSED" или "паузд" после имени брокера — ЗАКРЫТЬ часы этого брокера на указанный день
 - Строки с "funnel", "map", "keep", "sharing", "dif" — ИГНОРИРУЙ, это инструкции для других людей
@@ -824,10 +826,15 @@ async def find_and_open_broker(page: Page, broker_id: str, country_hint: str = N
             const tds = row.querySelectorAll("td");
             // Ищем колонку с именем: та что не число и не статус
             let name = "";
+            let status = "";
             tds.forEach(td => {
                 const t = td.innerText.trim();
-                // Пропускаем числа (ID) и короткие слова типа "active"
-                if (t && !/^\d+$/.test(t) && t.length > 4 && !["active","inactive","disabled"].includes(t.toLowerCase())) {
+                if (["active","inactive","disabled"].includes(t.toLowerCase())) {
+                    status = t.toLowerCase();
+                    return;
+                }
+                // Пропускаем числа (ID)
+                if (t && !/^\d+$/.test(t) && t.length > 4) {
                     if (!name) name = t;
                 }
             });
@@ -835,7 +842,8 @@ async def find_and_open_broker(page: Page, broker_id: str, country_hint: str = N
             if (link && name) {
                 results.push({
                     name: name,
-                    href: link.getAttribute("href")
+                    href: link.getAttribute("href"),
+                    status: status || "unknown"
                 });
             }
         });
@@ -907,15 +915,20 @@ async def find_and_open_broker(page: Page, broker_id: str, country_hint: str = N
                 log.info(f"Selected CPA by query: {best['name']}")
                 _last_broker_full_name = best["name"]
                 return best["href"].replace("/settings", "")
-        # Иначе предпочитаем CPA
+        # Иначе предпочитаем CPA (но только если есть active CPA)
         cpa = [r for r in partial if "cpa" in r["name"].lower()]
-        if cpa:
-            best = min(cpa, key=lambda r: len(r["name"]))
-            log.info(f"Preferred CPA: {best['name']}")
+        active_cpa = [r for r in cpa if r.get("status") == "active"]
+        if active_cpa:
+            best = min(active_cpa, key=lambda r: len(r["name"]))
+            log.info(f"Preferred CPA (active): {best['name']}")
             _last_broker_full_name = best["name"]
             return best["href"].replace("/settings", "")
-        # Нет ни CPA ни CRG — берём кратчайшее
-        best = min(partial, key=lambda r: len(r["name"]))
+        # Нет active CPA — берём кратчайшее active
+        active_partial = [r for r in partial if r.get("status") == "active"]
+        if active_partial:
+            best = min(active_partial, key=lambda r: len(r["name"]))
+        else:
+            best = min(partial, key=lambda r: len(r["name"]))
         log.info(f"Partial match (shortest): {best['name']}")
         _last_broker_full_name = best["name"]
         return best["href"].replace("/settings", "")
