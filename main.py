@@ -765,6 +765,22 @@ async def find_and_open_broker(page: Page, broker_id: str, country_hint: str = N
         log.info(f"After navigation URL: {current}")
         # Считаем успехом если нас не выкинуло на логин или список
         if "login" not in current and "/clients?" not in current:
+            # Читаем полное имя брокера со страницы
+            try:
+                full_name = await page.evaluate("""() => {
+                    // Ищем заголовок с именем брокера
+                    const h = document.querySelector('h1, h2, h3, .page-title, .broker-name');
+                    if (h) return h.innerText.trim();
+                    // Fallback: title страницы или первый крупный текст
+                    const title = document.title || '';
+                    if (title) return title.split('|')[0].trim();
+                    return '';
+                }""")
+                if full_name and len(full_name) > 2:
+                    _last_broker_full_name = full_name
+                    log.info(f"Broker full name from page: {full_name}")
+            except Exception:
+                pass
             return base
         return None
 
