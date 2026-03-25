@@ -856,9 +856,12 @@ async def find_and_open_broker(page: Page, broker_id: str, country_hint: str = N
         return None
     rows = relevant  # работаем только с релевантными
 
-    # 1. Точное совпадение имени (без учёта регистра)
+    # 1. Точное совпадение имени (без учёта регистра, без эмодзи)
     for row in rows:
-        if row["name"].lower().strip() == query_lower:
+        # Убираем эмодзи и лишние пробелы
+        clean_name = re.sub(r'[^\w\s_\-().]', '', row["name"]).strip().lower()
+        clean_name = re.sub(r'\s+', ' ', clean_name)
+        if clean_name == query_lower:
             log.info(f"Exact match: {row['name']}")
             _last_broker_full_name = row["name"]
             href = row["href"].replace("/settings", "")
@@ -867,8 +870,10 @@ async def find_and_open_broker(page: Page, broker_id: str, country_hint: str = N
     # 2. Имя начинается с запроса (например "MN" → "MN 216", но не "MN FR 216")
     for row in rows:
         name_lower = row["name"].lower().strip()
-        # Убираем числовой префикс типа "272 - MN"
+        # Убираем числовой префикс типа "272 - MN" и эмодзи
         clean = re.sub(r"^\d+\s*-\s*", "", name_lower).strip()
+        clean = re.sub(r'[^\w\s_\-().]', '', clean).strip()
+        clean = re.sub(r'\s+', ' ', clean)
         if clean == query_lower or name_lower == query_lower:
             log.info(f"Match after prefix cleanup: {row['name']}")
             _last_broker_full_name = row["name"]
@@ -892,6 +897,14 @@ async def find_and_open_broker(page: Page, broker_id: str, country_hint: str = N
             if crg:
                 best = min(crg, key=lambda r: len(r["name"]))
                 log.info(f"Selected CRG by query: {best['name']}")
+                _last_broker_full_name = best["name"]
+                return best["href"].replace("/settings", "")
+        # Если в запросе явно указан CPA — берём CPA
+        if "cpa" in query_lower:
+            cpa = [r for r in partial if "cpa" in r["name"].lower()]
+            if cpa:
+                best = min(cpa, key=lambda r: len(r["name"]))
+                log.info(f"Selected CPA by query: {best['name']}")
                 _last_broker_full_name = best["name"]
                 return best["href"].replace("/settings", "")
         # Иначе предпочитаем CPA
