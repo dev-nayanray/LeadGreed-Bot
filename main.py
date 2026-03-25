@@ -2067,7 +2067,7 @@ async def action_add_revenue(broker_id: str, country: str, amount: str, affiliat
                 amount_td = await row.query_selector("td:nth-child(3)")
                 if amount_td:
                     old_amount = (await amount_td.inner_text()).strip().replace("$", "").strip()
-                existing_pencil = await row.query_selector("a.btn-primary, button.btn-primary:not(.btn-danger)")
+                existing_pencil = await row.query_selector("button.btn-outline-primary, a.btn-primary, button.btn-primary:not(.btn-danger)")
                 if existing_pencil:
                     log.info(f"Entry for {country} already exists (${old_amount}) — editing")
                     break
