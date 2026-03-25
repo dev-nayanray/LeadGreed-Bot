@@ -3083,10 +3083,22 @@ async def _add_affiliate_parameter(page, modal, affiliate_id, close_dropdown: bo
         await page.wait_for_timeout(600)
 
         # Для каждого аффилиата — ищем и выбираем
+        # Это мультиселект: после клика на элемент дропдаун остаётся открытым
         for aff_idx, aff_id in enumerate(aff_ids):
-            # Для 2-го и последующих аффов — переоткрываем дропдаун
             if aff_idx > 0:
-                # Кликаем на дропдаун аффов чтобы открыть его
+                # Дропдаун уже открыт — просто ждём и очищаем поиск
+                await page.wait_for_timeout(500)
+
+            # Search input аффов — берём последний видимый
+            aff_inp = None
+            all_visible = await page.query_selector_all('input[id*="search-input"], input[id*="search"]')
+            for inp in reversed(all_visible):
+                if await inp.is_visible():
+                    aff_inp = inp
+                    break
+
+            if not aff_inp:
+                # Дропдаун мог закрыться — переоткрываем
                 for reopen_attempt in range(3):
                     await page.evaluate("""() => {
                         const labels = document.querySelectorAll('label');
@@ -3102,48 +3114,42 @@ async def _add_affiliate_parameter(page, modal, affiliate_id, close_dropdown: bo
                         }
                     }""")
                     await page.wait_for_timeout(800)
-                    # Проверяем появился ли search input
-                    check = await page.evaluate("""() => {
-                        const inputs = document.querySelectorAll('input[id*="search-input"], input[id*="search"]');
-                        for (const inp of inputs) {
-                            if (inp.offsetParent !== null) return true;
-                        }
-                        return false;
-                    }""")
-                    if check:
+                    all_visible = await page.query_selector_all('input[id*="search-input"], input[id*="search"]')
+                    for inp in reversed(all_visible):
+                        if await inp.is_visible():
+                            aff_inp = inp
+                            break
+                    if aff_inp:
                         break
-                    log.info(f"Reopen attempt {reopen_attempt+1}: search input not visible yet")
-                    await page.wait_for_timeout(500)
-
-            # Search input аффов — берём последний видимый
-            aff_inp = None
-            all_visible = await page.query_selector_all('input[id*="search-input"], input[id*="search"]')
-            for inp in reversed(all_visible):
-                if await inp.is_visible():
-                    aff_inp = inp
-                    break
+                    log.info(f"Reopen attempt {reopen_attempt+1}: search input not visible")
 
             if aff_inp:
                 inp_id = await aff_inp.get_attribute("id")
                 log.info(f"Aff search input: {inp_id}, searching for aff {aff_id}")
-                await aff_inp.click(click_count=3)
-                await page.keyboard.press("Backspace")
-                await page.wait_for_timeout(200)
-                await aff_inp.fill("")
-                await page.wait_for_timeout(300)
-                await aff_inp.type(str(aff_id), delay=50)
-                await page.wait_for_timeout(200)
+                # Очищаем поле и вводим через JS (надёжнее для Vue)
                 await aff_inp.evaluate("""el => {
+                    el.value = '';
                     el.dispatchEvent(new Event('input', {bubbles: true}));
-                    el.dispatchEvent(new KeyboardEvent('keyup', {bubbles: true}));
                 }""")
-                # Ждём пока Vue отфильтрует список
-                for _ in range(20):
-                    await page.wait_for_timeout(200)
+                await page.wait_for_timeout(400)
+                # Вводим новый ID
+                await aff_inp.evaluate(f"""el => {{
+                    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+                        window.HTMLInputElement.prototype, 'value').set;
+                    nativeInputValueSetter.call(el, '{aff_id}');
+                    el.dispatchEvent(new Event('input', {{bubbles: true}}));
+                    el.dispatchEvent(new KeyboardEvent('keydown', {{bubbles: true}}));
+                    el.dispatchEvent(new KeyboardEvent('keyup', {{bubbles: true}}));
+                }}""")
+                log.info(f"Set search value to '{aff_id}' via JS")
+                # Ждём Vue фильтрацию
+                await page.wait_for_timeout(600)
+                for _ in range(15):
+                    await page.wait_for_timeout(300)
                     cnt_check = await page.evaluate(
                         "() => document.querySelectorAll('li.flex-fill, li.dropdown-item').length"
                     )
-                    if cnt_check > 0:
+                    if 0 < cnt_check < 20:
                         break
                 await page.wait_for_timeout(200)
             else:
@@ -3153,7 +3159,12 @@ async def _add_affiliate_parameter(page, modal, affiliate_id, close_dropdown: bo
             cnt = await page.evaluate(
                 "() => document.querySelectorAll('li.flex-fill, li.dropdown-item').length"
             )
-            log.info(f"Affiliate items after filter for {aff_id}: {cnt}")
+            # Логируем первые 3 элемента для дебага
+            first_items = await page.evaluate("""() => {
+                const items = document.querySelectorAll('li.flex-fill, li.dropdown-item');
+                return Array.from(items).slice(0, 3).map(i => i.innerText.trim());
+            }""")
+            log.info(f"Affiliate items after filter for {aff_id}: {cnt}, first: {first_items}")
 
             selected_aff = await page.evaluate("""(affId) => {
                 const items = document.querySelectorAll('li.flex-fill, li.dropdown-item');
