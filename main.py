@@ -755,31 +755,67 @@ async def find_and_open_broker(page: Page, broker_id: str, country_hint: str = N
     if country_hint and country_hint.lower() in LATAM_COUNTRIES:
         is_latam = True
 
-    # Если ID числовой — идём напрямую, без поиска
+    # Если ID числовой — ищем через поиск (чтобы получить полное имя)
+    # Если не найдём — fallback на прямой переход
     if broker_id.isdigit():
+        # Сначала пробуем через поиск
+        await page.goto(f"{CRM_URL.rstrip('/')}/clients?search=", wait_until="domcontentloaded", timeout=60000)
+        await page.wait_for_timeout(2000)
+        search = None
+        for selector in [
+            "input[placeholder='Search a broker...']",
+            "input.form-control[type='text']",
+            "input[type='text']",
+        ]:
+            try:
+                search = await page.wait_for_selector(selector, timeout=3000)
+                if search:
+                    break
+            except Exception:
+                continue
+        if search:
+            await search.click(click_count=3)
+            await page.keyboard.press("Backspace")
+            await page.wait_for_timeout(300)
+            await search.fill("")
+            await page.wait_for_timeout(200)
+            await search.type(broker_id, delay=60)
+            await page.wait_for_timeout(1500)
+            # Ищем строку с этим ID
+            rows = await page.evaluate(r"""(bid) => {
+                const results = [];
+                document.querySelectorAll("table tr").forEach(row => {
+                    const link = row.querySelector("a[href*='/clients/'][href*='/settings']") ||
+                                 row.querySelector("a.btn-primary");
+                    if (!link) return;
+                    const href = link.getAttribute("href");
+                    if (!href.includes('/clients/' + bid + '/')) return;
+                    const tds = row.querySelectorAll("td");
+                    let name = "";
+                    tds.forEach(td => {
+                        const t = td.innerText.trim();
+                        if (t && !/^\d+$/.test(t) && t.length > 4 && !["active","inactive","disabled"].includes(t.toLowerCase())) {
+                            if (!name) name = t;
+                        }
+                    });
+                    if (link && name) {
+                        results.push({ name: name, href: href });
+                    }
+                });
+                return results;
+            }""", broker_id)
+            if rows:
+                _last_broker_full_name = rows[0]["name"]
+                log.info(f"Found broker by ID search: {rows[0]['name']}")
+                return rows[0]["href"].replace("/settings", "")
+
+        # Fallback — прямой переход
         base = f"/clients/{broker_id}"
         test_url = f"{CRM_URL.rstrip('/')}{base}/settings"
         await page.goto(test_url, wait_until="domcontentloaded", timeout=60000)
         await page.wait_for_timeout(800)
         current = page.url
-        log.info(f"After navigation URL: {current}")
-        # Считаем успехом если нас не выкинуло на логин или список
         if "login" not in current and "/clients?" not in current:
-            # Читаем полное имя брокера со страницы
-            try:
-                body_text = await page.evaluate("() => document.body?.innerText?.substring(0, 2000) || ''")
-                # Ищем паттерн "NNNN - BrokerName" в тексте
-                pattern = re.compile(rf'\b{broker_id}\s*-\s*([^\n]+)', re.IGNORECASE)
-                match = pattern.search(body_text)
-                if match:
-                    full_name = f"{broker_id} - {match.group(1).strip()}"
-                    # Обрезаем если слишком длинное (убираем описание после имени)
-                    if len(full_name) > 60:
-                        full_name = full_name[:60].rsplit(' ', 1)[0]
-                    _last_broker_full_name = full_name
-                    log.info(f"Broker full name from page: {full_name}")
-            except Exception:
-                pass
             return base
         return None
 
