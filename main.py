@@ -3266,7 +3266,7 @@ async def _add_affiliate_parameter(page, modal, affiliate_id, close_dropdown: bo
 
 def escape_md(text: str) -> str:
     """Экранировать спецсимволы Markdown v1 в тексте для Telegram."""
-    for ch in ('_', '*', '`', '['):
+    for ch in ('*', '`', '['):
         text = text.replace(ch, f'\\{ch}')
     return text
 
