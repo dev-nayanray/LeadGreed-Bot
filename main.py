@@ -3084,16 +3084,24 @@ async def _add_affiliate_parameter(page, modal, affiliate_id, close_dropdown: bo
 
         # Для каждого аффилиата — ищем и выбираем
         for aff_idx, aff_id in enumerate(aff_ids):
-            # Search input аффов — берём последний видимый
-            all_search_inputs = await page.evaluate("""() => {
-                const inputs = document.querySelectorAll('input[id*="search-input"], input[id*="search"]');
-                return Array.from(inputs)
-                    .filter(el => el.offsetParent !== null)
-                    .map(el => ({id: el.id, value: el.value}));
-            }""")
-            if aff_idx == 0:
-                log.info(f"Visible search inputs: {all_search_inputs}")
+            # Для 2-го и последующих аффов — переоткрываем дропдаун
+            if aff_idx > 0:
+                await page.evaluate("""() => {
+                    const labels = document.querySelectorAll('label');
+                    for (const lbl of labels) {
+                        const t = lbl.innerText.trim().toLowerCase();
+                        if (t === 'affiliate' || t === 'affiliates') {
+                            const row = lbl.closest('.form-row, .form-group');
+                            const inner = row?.querySelector('.smart__dropdown__input__element') ||
+                                          row?.querySelector('[class*="cursor-pointer"]') ||
+                                          row?.querySelector('[class*="smart__dropdown"]');
+                            if (inner) { inner.click(); return; }
+                        }
+                    }
+                }""")
+                await page.wait_for_timeout(600)
 
+            # Search input аффов — берём последний видимый
             aff_inp = None
             all_visible = await page.query_selector_all('input[id*="search-input"], input[id*="search"]')
             for inp in reversed(all_visible):
@@ -3104,24 +3112,17 @@ async def _add_affiliate_parameter(page, modal, affiliate_id, close_dropdown: bo
             if aff_inp:
                 inp_id = await aff_inp.get_attribute("id")
                 log.info(f"Aff search input: {inp_id}, searching for aff {aff_id}")
-                await aff_inp.click()
-                # Очищаем поле перед вводом
-                await aff_inp.evaluate(f"""el => {{
-                    const setter = Object.getOwnPropertyDescriptor(
-                        window.HTMLInputElement.prototype, 'value').set;
-                    setter.call(el, '');
-                    el.dispatchEvent(new Event('input', {{bubbles: true}}));
-                    el.dispatchEvent(new KeyboardEvent('keyup', {{bubbles: true}}));
-                }}""")
-                await page.wait_for_timeout(400)
-                # Вводим ID аффилиата
-                await aff_inp.evaluate(f"""el => {{
-                    const setter = Object.getOwnPropertyDescriptor(
-                        window.HTMLInputElement.prototype, 'value').set;
-                    setter.call(el, '{aff_id}');
-                    el.dispatchEvent(new Event('input', {{bubbles: true}}));
-                    el.dispatchEvent(new KeyboardEvent('keyup', {{bubbles: true}}));
-                }}""")
+                await aff_inp.click(click_count=3)
+                await page.keyboard.press("Backspace")
+                await page.wait_for_timeout(200)
+                await aff_inp.fill("")
+                await page.wait_for_timeout(300)
+                await aff_inp.type(str(aff_id), delay=50)
+                await page.wait_for_timeout(200)
+                await aff_inp.evaluate("""el => {
+                    el.dispatchEvent(new Event('input', {bubbles: true}));
+                    el.dispatchEvent(new KeyboardEvent('keyup', {bubbles: true}));
+                }""")
                 # Ждём пока Vue отфильтрует список
                 for _ in range(20):
                     await page.wait_for_timeout(200)
