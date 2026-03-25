@@ -107,6 +107,7 @@ SYSTEM_PROMPT = """
 - change_caps          — изменить дневной лимит (cap) брокера для страны
 - lead_task            — комбинированная задача: поставить часы + капу одновременно (из лид-формы)
 - bulk_schedule        — расписание на выходные/конкретные дни: поставить часы + закрыть другие дни (skip missing countries)
+- multi_broker_task    — несколько брокеров из одного сообщения: часы, капы, закрытие для разных брокеров
 - unknown              — команда непонятна
 
 Структура JSON (общая):
@@ -239,7 +240,11 @@ SYSTEM_PROMPT = """
   • "Nexus CPA FR cap 20" → {"action": "change_caps", "broker_ids": ["Nexus CPA"], "country_caps": [{"country": "France", "cap": 20}]}
   • "legion de 20 cap aff 127" → {"action": "change_caps", "broker_ids": ["Legion"], "country_caps": [{"country": "Germany", "cap": 20, "affiliate_id": "127"}]}
   • "поставь капу 15 легион де для аффа 127" → {"action": "change_caps", "broker_ids": ["Legion"], "country_caps": [{"country": "Germany", "cap": 15, "affiliate_id": "127"}]}
-  Если в команде есть "aff N", "affiliate N", "аф N", "аффу N", "для аффа N" — добавляй поле "affiliate_id": "N" в country_caps.
+  • "legion de 20 cap aff 107 144" → {"action": "change_caps", "broker_ids": ["Legion"], "country_caps": [{"country": "Germany", "cap": 20, "affiliate_id": ["107", "144"]}]}
+  • "Nexus FR cap 15 aff 107 144 145" → {"action": "change_caps", "broker_ids": ["Nexus"], "country_caps": [{"country": "France", "cap": 15, "affiliate_id": ["107", "144", "145"]}]}
+  Если в команде есть "aff N", "affiliate N", "аф N", "аффу N", "для аффа N" — добавляй поле "affiliate_id" в country_caps.
+  affiliate_id может быть строкой (один аффилиат) или списком строк (несколько аффилиатов).
+  Если после "aff" идёт НЕСКОЛЬКО чисел — это несколько аффилиатов, запиши их как список: "affiliate_id": ["107", "144"].
   ВАЖНО: cap или delta должен быть числом (int). Country обязательна.
   Отличай от прайсов! "cap", "кап", "лимит" → change_caps. "прайс", "price", "$" → add_revenue.
 - Для get_caps: узнать текущие капы брокера для страны/стран.
@@ -439,6 +444,65 @@ Capitan, Legion, Fintrix CRG, Swin FR CRG, Swin FR CRG duplicate, Swin EN CRG, S
     "no_traffic": true,
     "skip_missing": false
   }
+
+Формат "мульти-брокер задача" (multi_broker_task):
+Когда в одном сообщении указана ОДНА страна/день в заголовке и НЕСКОЛЬКО брокеров с разными действиями.
+Формат:
+  DE CRG tomorrow
+  123/122/28
+  Legion 20 cap total 09:00-18:00 gmt+2
+  ... (текст про фаннелы, маппинг — ИГНОРИРУЙ)
+  122/123
+  Fintrix CRG PAUSED
+  123/122/28
+  Capitan 15 cap 11:00-19:00 gmt+2
+  ... (текст про фаннелы, маппинг — ИГНОРИРУЙ)
+
+Правила разбора:
+- Первая строка = заголовок: страна (ISO код) + тип (CRG/CPA) + день (today/tomorrow/название дня)
+- Строки с числами через / (123/122/28) — ID аффилиатов, ИГНОРИРУЙ
+- Строки с именем брокера + "N cap" + "HH:MM-HH:MM" — поставить капу и часы
+- "cap total" или просто "cap" без "aff" — капа БЕЗ affiliate_id
+- Строка "PAUSED" или "паузд" после имени брокера — ЗАКРЫТЬ часы этого брокера на указанный день
+- Строки с "funnel", "map", "keep", "sharing", "dif" — ИГНОРИРУЙ, это инструкции для других людей
+- gmt+N — конвертируй время в GMT+2
+
+Результат — action "multi_broker_task" с полем "tasks" (список подзадач):
+{
+  "action": "multi_broker_task",
+  "broker_ids": [],
+  "tasks": [
+    {
+      "type": "lead_task",
+      "broker_id": "Legion",
+      "country": "Germany",
+      "cap": 20,
+      "start": "09:00",
+      "end": "18:00",
+      "day": "Wednesday",
+      "no_traffic": true
+    },
+    {
+      "type": "close_day",
+      "broker_id": "Fintrix CRG",
+      "country": "Germany",
+      "day": "Wednesday"
+    },
+    {
+      "type": "lead_task",
+      "broker_id": "Capitan",
+      "country": "Germany",
+      "cap": 15,
+      "start": "11:00",
+      "end": "19:00",
+      "day": "Wednesday",
+      "no_traffic": true
+    }
+  ]
+}
+Каждая подзадача имеет type:
+  - "lead_task" — поставить часы + капу (cap может быть null если только часы)
+  - "close_day" — закрыть часы на этот день (PAUSED)
 
 Формат "desk-расписания":
 Пользователь может прислать расписание в таком формате:
@@ -2722,7 +2786,13 @@ async def action_change_caps(broker_id: str, country: str, cap_value: int = 0, d
             )
             await save_btn.click()
             await page.wait_for_timeout(1000)
-            aff_info = f" (aff {affiliate_id})" if affiliate_id else ""
+            if affiliate_id:
+                if isinstance(affiliate_id, list):
+                    aff_info = f" (aff {', '.join(str(a) for a in affiliate_id)})"
+                else:
+                    aff_info = f" (aff {affiliate_id})"
+            else:
+                aff_info = ""
             return f"✅ {country}: cap created: {cap_value}{aff_info}"
         except Exception:
             await _close_modal(page)
@@ -2886,8 +2956,15 @@ async def _delete_cap_without_params(page, country: str) -> bool:
         return False
 
 
-async def _add_affiliate_parameter(page, modal, affiliate_id: str, close_dropdown: bool = True) -> bool:
-    """Добавить параметр Affiliates к капе. modal — элемент модального окна."""
+async def _add_affiliate_parameter(page, modal, affiliate_id, close_dropdown: bool = True) -> bool:
+    """Добавить параметр Affiliates к капе. affiliate_id может быть строкой или списком строк."""
+    # Нормализуем — всегда работаем со списком
+    if isinstance(affiliate_id, str):
+        aff_ids = [affiliate_id]
+    elif isinstance(affiliate_id, list):
+        aff_ids = [str(a) for a in affiliate_id]
+    else:
+        aff_ids = [str(affiliate_id)]
     # Нажимаем + ADD PARAMETER (синяя кнопка) через JS
     try:
         clicked = await page.evaluate("""() => {
@@ -3005,76 +3082,80 @@ async def _add_affiliate_parameter(page, modal, affiliate_id: str, close_dropdow
         }""")
         await page.wait_for_timeout(600)
 
-        # Search input аффов — берём последний видимый
-        all_search_inputs = await page.evaluate("""() => {
-            const inputs = document.querySelectorAll('input[id*="search-input"], input[id*="search"]');
-            return Array.from(inputs)
-                .filter(el => el.offsetParent !== null)
-                .map(el => ({id: el.id, value: el.value}));
-        }""")
-        log.info(f"Visible search inputs: {all_search_inputs}")
+        # Для каждого аффилиата — ищем и выбираем
+        for aff_idx, aff_id in enumerate(aff_ids):
+            # Search input аффов — берём последний видимый
+            all_search_inputs = await page.evaluate("""() => {
+                const inputs = document.querySelectorAll('input[id*="search-input"], input[id*="search"]');
+                return Array.from(inputs)
+                    .filter(el => el.offsetParent !== null)
+                    .map(el => ({id: el.id, value: el.value}));
+            }""")
+            if aff_idx == 0:
+                log.info(f"Visible search inputs: {all_search_inputs}")
 
-        aff_inp = None
-        all_visible = await page.query_selector_all('input[id*="search-input"], input[id*="search"]')
-        for inp in reversed(all_visible):
-            if await inp.is_visible():
-                aff_inp = inp
-                break
-
-        if aff_inp:
-            inp_id = await aff_inp.get_attribute("id")
-            log.info(f"Aff search input: {inp_id}")
-            await aff_inp.click()
-            # Устанавливаем значение через нативный Vue-совместимый способ
-            await aff_inp.evaluate(f"""el => {{
-                const setter = Object.getOwnPropertyDescriptor(
-                    window.HTMLInputElement.prototype, 'value').set;
-                setter.call(el, '{affiliate_id}');
-                el.dispatchEvent(new Event('input', {{bubbles: true}}));
-                el.dispatchEvent(new KeyboardEvent('keyup', {{bubbles: true}}));
-            }}""")
-            # Ждём пока Vue отфильтрует список
-            for _ in range(20):
-                await page.wait_for_timeout(200)
-                cnt_check = await page.evaluate(
-                    "() => document.querySelectorAll('li.flex-fill, li.dropdown-item').length"
-                )
-                if cnt_check > 0:
+            aff_inp = None
+            all_visible = await page.query_selector_all('input[id*="search-input"], input[id*="search"]')
+            for inp in reversed(all_visible):
+                if await inp.is_visible():
+                    aff_inp = inp
                     break
-            await page.wait_for_timeout(200)
-        else:
-            log.warning("Aff search input not found via Playwright")
 
-        cnt = await page.evaluate(
-            "() => document.querySelectorAll('li.flex-fill, li.dropdown-item').length"
-        )
-        log.info(f"Affiliate items after filter: {cnt}")
+            if aff_inp:
+                inp_id = await aff_inp.get_attribute("id")
+                log.info(f"Aff search input: {inp_id}, searching for aff {aff_id}")
+                await aff_inp.click()
+                # Очищаем поле перед вводом (важно для 2-го и последующих аффов)
+                await aff_inp.evaluate(f"""el => {{
+                    const setter = Object.getOwnPropertyDescriptor(
+                        window.HTMLInputElement.prototype, 'value').set;
+                    setter.call(el, '{aff_id}');
+                    el.dispatchEvent(new Event('input', {{bubbles: true}}));
+                    el.dispatchEvent(new KeyboardEvent('keyup', {{bubbles: true}}));
+                }}""")
+                # Ждём пока Vue отфильтрует список
+                for _ in range(20):
+                    await page.wait_for_timeout(200)
+                    cnt_check = await page.evaluate(
+                        "() => document.querySelectorAll('li.flex-fill, li.dropdown-item').length"
+                    )
+                    if cnt_check > 0:
+                        break
+                await page.wait_for_timeout(200)
+            else:
+                log.warning(f"Aff search input not found for aff {aff_id}")
+                continue
 
-        selected_aff = await page.evaluate("""(affId) => {
-            const items = document.querySelectorAll('li.flex-fill, li.dropdown-item');
-            for (const item of items) {
-                const txt = item.innerText.trim();
-                if (txt.includes('(' + affId + ')') ||
-                    txt.startsWith(affId + ' ') ||
-                    txt.startsWith('*' + affId) ||
-                    txt === affId) {
-                    item.click();
-                    return txt;
+            cnt = await page.evaluate(
+                "() => document.querySelectorAll('li.flex-fill, li.dropdown-item').length"
+            )
+            log.info(f"Affiliate items after filter for {aff_id}: {cnt}")
+
+            selected_aff = await page.evaluate("""(affId) => {
+                const items = document.querySelectorAll('li.flex-fill, li.dropdown-item');
+                for (const item of items) {
+                    const txt = item.innerText.trim();
+                    if (txt.includes('(' + affId + ')') ||
+                        txt.startsWith(affId + ' ') ||
+                        txt.startsWith('*' + affId) ||
+                        txt === affId) {
+                        item.click();
+                        return txt;
+                    }
                 }
-            }
-            if (items.length > 0) {
-                const first = items[0].innerText.trim();
-                items[0].click();
-                return 'fallback:' + first;
-            }
-            return null;
-        }""", str(affiliate_id))
+                if (items.length > 0) {
+                    const first = items[0].innerText.trim();
+                    items[0].click();
+                    return 'fallback:' + first;
+                }
+                return null;
+            }""", str(aff_id))
 
-        if not selected_aff:
-            log.warning(f"Affiliate {affiliate_id} not found in list (items={cnt})")
-            return False
-        log.info(f"Selected affiliate: {selected_aff}")
-        await page.wait_for_timeout(300)
+            if not selected_aff:
+                log.warning(f"Affiliate {aff_id} not found in list (items={cnt})")
+            else:
+                log.info(f"Selected affiliate: {selected_aff}")
+            await page.wait_for_timeout(300)
 
         # Закрываем дропдаун аффов — только для caps
         if close_dropdown:
@@ -3305,6 +3386,26 @@ def build_confirm_text(action: dict) -> str:
             f"Confirm?"
         )
 
+    if a == "multi_broker_task":
+        tasks = action.get("tasks", [])
+        lines = []
+        for t in tasks:
+            bid = t.get("broker_id", "?")
+            country = t.get("country", "?")
+            if t.get("type") == "close_day":
+                lines.append(f"  🚫 {bid}: close {country} on {t.get('day', '?')}")
+            else:
+                cap_str = f", cap {t.get('cap')}" if t.get("cap") else ""
+                hours_str = f" {t.get('start', '?')}–{t.get('end', '?')}" if t.get("start") else ""
+                lines.append(f"  ✏️ {bid}: {country}{hours_str}{cap_str} ({t.get('day', '?')})")
+        tasks_str = "\n".join(lines)
+        return (
+            f"📋 *Confirmation required*\n\n"
+            f"Action: multi-broker task ({len(tasks)} brokers)\n"
+            f"Tasks:\n{tasks_str}\n\n"
+            f"Confirm?"
+        )
+
     return f"📋 Action: `{a}`\n\nConfirm?"
 
 
@@ -3405,6 +3506,123 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                     alog.update_action(lid, "success" if "❌" not in sub_msg else "error", sub_msg[:200])
                 except Exception as e:
                     results.append(f"*{pt_type} {escape_md(pt_id)}:*\n❌ {escape_md(str(e))}")
+                    alog.update_action(lid, "error", str(e)[:200])
+
+            alog.set_status("last_action", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            msg_text = "\n\n".join(results) or "✅ Done."
+            for attempt in range(3):
+                try:
+                    await bot.send_message(chat_id, msg_text, parse_mode="Markdown", disable_notification=True)
+                    break
+                except Exception:
+                    if attempt < 2:
+                        await asyncio.sleep(3)
+            return
+
+        # multi_broker_task — несколько брокеров из одного сообщения
+        if a == "multi_broker_task":
+            tasks = action.get("tasks", [])
+            for task in tasks:
+                t_type = task.get("type", "lead_task")
+                t_broker = task.get("broker_id", "")
+                t_country = task.get("country", "")
+                t_day = task.get("day", "")
+
+                lid = alog.log_action(f"multi_{t_type}", t_broker, f"{t_country} {t_day}",
+                                      "pending", user_command=user_cmd)
+                log_ids.append(lid)
+
+                try:
+                    if t_type == "close_day":
+                        # Закрываем день
+                        close_msg = await action_close_days(
+                            broker_id=t_broker,
+                            country=t_country,
+                            days_to_close=[t_day]
+                        )
+                        display_name = _last_broker_full_name if _last_broker_full_name != t_broker else t_broker
+                        results.append(f"*Broker {escape_md(display_name)}:*\n🚫 {escape_md(close_msg)}")
+                        alog.update_action(lid, "success" if "❌" not in close_msg else "error", close_msg[:200])
+
+                    else:
+                        # lead_task — капа + часы
+                        sub_parts = []
+
+                        # Капа
+                        if task.get("cap") is not None:
+                            cap_msg = await action_change_caps(
+                                broker_id=t_broker,
+                                country=t_country,
+                                cap_value=int(task["cap"]),
+                                delta=None,
+                                affiliate_id=None,
+                                delete_first=False,
+                            )
+                            if cap_msg.startswith("__"):
+                                cap_msg = await action_change_caps(
+                                    broker_id=t_broker,
+                                    country=t_country,
+                                    cap_value=int(task["cap"]),
+                                    delta=None,
+                                    affiliate_id=None,
+                                    delete_first=True,
+                                )
+                            sub_parts.append(f"🎯 Cap: {cap_msg}")
+
+                        # Часы
+                        if task.get("start") and task.get("end"):
+                            # Проверяем есть ли страна у брокера
+                            page = await get_page()
+                            broker_base = await find_and_open_broker(page, t_broker)
+                            if broker_base:
+                                oh_url = f"{CRM_URL.rstrip('/')}{broker_base}/opening_hours"
+                                await page.goto(oh_url, wait_until="domcontentloaded", timeout=60000)
+                                existing = await _scrape_countries_from_page(page)
+                                country_exists = any(t_country.lower() in ec.lower() for ec in existing)
+
+                                weekends = {"saturday", "sunday"}
+                                is_weekend = t_day.lower() in weekends if t_day else False
+
+                                if t_day:
+                                    if country_exists:
+                                        hours_msg = await action_edit_country_add_days(
+                                            broker_id=t_broker,
+                                            country=t_country,
+                                            start=task["start"],
+                                            end=task["end"],
+                                            no_traffic=task.get("no_traffic", True),
+                                            days_to_add=[t_day]
+                                        )
+                                    else:
+                                        new_days = [t_day] if is_weekend else ["Monday","Tuesday","Wednesday","Thursday","Friday"]
+                                        hours_msg = await action_add_country_hours(
+                                            broker_id=t_broker,
+                                            country=t_country,
+                                            start=task["start"],
+                                            end=task["end"],
+                                            no_traffic=task.get("no_traffic", True),
+                                            days_filter=new_days
+                                        )
+                                else:
+                                    hours_msg = await action_change_hours(
+                                        broker_id=t_broker,
+                                        start=task["start"],
+                                        end=task["end"],
+                                        countries_filter=[t_country],
+                                        no_traffic=task.get("no_traffic", True),
+                                        days_filter=["Monday","Tuesday","Wednesday","Thursday","Friday"]
+                                    )
+                                sub_parts.append(f"🕐 Hours: {hours_msg}")
+                            else:
+                                sub_parts.append(f"❌ Broker '{t_broker}' not found")
+
+                        display_name = _last_broker_full_name if _last_broker_full_name != t_broker else t_broker
+                        results.append(f"*Broker {escape_md(display_name)}:*\n{escape_md(chr(10).join(sub_parts))}")
+                        alog.update_action(lid, "success" if not any("❌" in p for p in sub_parts) else "error",
+                                          "; ".join(sub_parts)[:200])
+
+                except Exception as e:
+                    results.append(f"*Broker {escape_md(t_broker)}:*\n❌ {escape_md(str(e))}")
                     alog.update_action(lid, "error", str(e)[:200])
 
             alog.set_status("last_action", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
@@ -3629,12 +3847,19 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                         cap_val    = cc.get("cap")
                         aff_id_val   = cc.get("affiliate_id")
                         delete_first = cc.get("_delete_first", False)
+                        # affiliate_id может быть строкой, списком или None
+                        if isinstance(aff_id_val, list):
+                            aff_param = aff_id_val  # передаём список как есть
+                        elif aff_id_val is not None:
+                            aff_param = str(aff_id_val)
+                        else:
+                            aff_param = None
                         sub_msg = await action_change_caps(
                             broker_id=str(broker_id),
                             country=cc.get("country", ""),
                             cap_value=int(cap_val) if cap_val is not None else 0,
                             delta=int(delta_val) if delta_val is not None else None,
-                            affiliate_id=str(aff_id_val) if aff_id_val is not None else None,
+                            affiliate_id=aff_param,
                             delete_first=delete_first,
                         )
                         # Есть капа без параметров — спрашиваем удалить или оставить
@@ -3706,13 +3931,19 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                 for cc in cc_list:
                     cap_val = cc.get("cap")
                     aff_id_val = cc.get("affiliate_id")
+                    if isinstance(aff_id_val, list):
+                        aff_param = aff_id_val
+                    elif aff_id_val is not None:
+                        aff_param = str(aff_id_val)
+                    else:
+                        aff_param = None
                     try:
                         sub_msg = await action_change_caps(
                             broker_id=str(broker_id),
                             country=cc.get("country", ""),
                             cap_value=int(cap_val) if cap_val is not None else 0,
                             delta=None,
-                            affiliate_id=str(aff_id_val) if aff_id_val is not None else None,
+                            affiliate_id=aff_param,
                             delete_first=False,
                         )
                         if sub_msg.startswith("__"):
@@ -4020,7 +4251,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Паттерн 2: CRM-команды (cap, wh, price, hours)
         text_lower = combined_text.lower()
         crm_commands = ("cap", "price", "wh ", "hours", "прайс", "часы", "кап", "лимит",
-                        "schedule", "geo:", "desk", "off", "close", "закрыть", "выходн")
+                        "schedule", "geo:", "desk", "off", "close", "закрыть", "выходн", "paused")
         has_command = any(kw in text_lower for kw in crm_commands)
         # Паттерн 3: время (HH:MM-HH:MM) — расписание
         has_time = bool(re.search(r'\d{1,2}:\d{2}\s*[-–]\s*\d{1,2}:\d{2}', combined_text))
@@ -4068,7 +4299,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await enqueue(_execute_confirmed_task, context.bot, chat_id, action)
         return
 
-    if action.get("action") == "unknown" or (not action.get("broker_ids") and action.get("action") not in ("set_prices", "bulk_schedule")):
+    if action.get("action") == "unknown" or (not action.get("broker_ids") and action.get("action") not in ("set_prices", "bulk_schedule", "multi_broker_task")):
         log.warning(f"Command not recognized. action={action}")
         # В группе молчим, в личке — показываем подсказку
         if not is_group:
