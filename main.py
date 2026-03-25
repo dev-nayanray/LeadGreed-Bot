@@ -488,6 +488,16 @@ Capitan, Legion, Fintrix CRG, Swin FR CRG, Swin FR CRG duplicate, Swin EN CRG, A
 
 - Для desk-формата всегда ставь "skip_missing": true — не нужно добавлять страны которых not found for broker, только обновлять существующие
 
+ВАЖНО — конвертация часовых поясов:
+CRM работает в GMT+2. Если в сообщении указан другой часовой пояс (GMT+3, GMT+1, UTC+3...) — ОБЯЗАТЕЛЬНО конвертируй все часы в GMT+2 перед записью в JSON.
+Формула: время_GMT2 = время_оригинал - (оригинал_offset - 2)
+Примеры:
+  • GMT+3 → GMT+2: вычитаем 1 час. "14:00-20:00 GMT+3" → "13:00-19:00"
+  • GMT+1 → GMT+2: прибавляем 1 час. "10:00-18:00 GMT+1" → "11:00-19:00"
+  • GMT+0 → GMT+2: прибавляем 2 часа. "08:00-16:00 GMT+0" → "10:00-18:00"
+  • Если часовой пояс не указан — считай что время уже в GMT+2, ничего не конвертируй.
+Всегда записывай в JSON уже сконвертированное время.
+
 Пример команды: "поставь hours for этих стран на субботу: JP desk 07:30-12:30 / GEO: JP / EN desk 11:00-17:00 / GEO: BE FI NL"
 Результат:
 {
@@ -504,6 +514,26 @@ Capitan, Legion, Fintrix CRG, Swin FR CRG, Swin FR CRG duplicate, Swin EN CRG, A
 }
 
 - Возвращай ТОЛЬКО JSON
+
+Контекст ответа:
+Иногда команда приходит как ответ на другое сообщение. Формат:
+[Ответ на сообщение:]
+<текст оригинального сообщения>
+
+[Новая команда:]
+<текст новой команды>
+
+В этом случае:
+- Используй оригинальное сообщение для КОНТЕКСТА (имя брокера, список стран, часы)
+- Используй новую команду как ДЕЙСТВИЕ (что нужно сделать)
+Примеры:
+  [Ответ на:] "Nexus Schedule GMT+3 ... FR desk 14:00-20:00 ... GEO: FR ..."
+  [Команда:] "FR with Nexus is off this weekend pls"
+  → {"action": "close_days", "broker_ids": ["Nexus"], "countries_days": [{"country": "France", "days_to_close": ["Saturday", "Sunday"]}]}
+  
+  [Ответ на:] "Capitan 15 cap 10:00-19:00"
+  [Команда:] "change to 20 cap"
+  → {"action": "change_caps", "broker_ids": ["Capitan"], "country_caps": [{"country": "France", "cap": 20}]}
 """
 
 def parse_command(text: str) -> dict:
@@ -3886,24 +3916,36 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text.strip()
 
+    # Если сообщение — ответ на другое сообщение, добавляем контекст
+    reply_context = ""
+    if update.message.reply_to_message and update.message.reply_to_message.text:
+        reply_context = update.message.reply_to_message.text.strip()
+
     # В групповых чатах — реагируем только на сообщения, похожие на CRM-команды
     # В личке — обрабатываем всё
     is_group = update.effective_chat.type in ("group", "supergroup")
     if is_group:
-        text_upper = text.upper()
+        # Объединяем текст + контекст для проверки
+        combined_text = f"{text}\n{reply_context}" if reply_context else text
+        text_upper = combined_text.upper()
         # Паттерн 1: ISO код страны (2 заглавные буквы) + число 3-4 цифры (прайс)
-        has_price_pattern = bool(re.search(r'\b[A-Z]{2}\b', text_upper) and re.search(r'\b\d{3,4}\b', text))
+        has_price_pattern = bool(re.search(r'\b[A-Z]{2}\b', text_upper) and re.search(r'\b\d{3,4}\b', combined_text))
         # Паттерн 2: CRM-команды (cap, wh, price, hours)
-        text_lower = text.lower()
-        crm_commands = ("cap", "price", "wh ", "hours", "прайс", "часы", "кап", "лимит")
+        text_lower = combined_text.lower()
+        crm_commands = ("cap", "price", "wh ", "hours", "прайс", "часы", "кап", "лимит",
+                        "schedule", "geo:", "desk", "off", "close", "закрыть", "выходн")
         has_command = any(kw in text_lower for kw in crm_commands)
         # Паттерн 3: время (HH:MM-HH:MM) — расписание
-        has_time = bool(re.search(r'\d{1,2}:\d{2}\s*[-–]\s*\d{1,2}:\d{2}', text))
+        has_time = bool(re.search(r'\d{1,2}:\d{2}\s*[-–]\s*\d{1,2}:\d{2}', combined_text))
         if not (has_price_pattern or has_command or has_time):
             return
         # CPL — игнорируем полностью
         if "cpl" in text.lower():
             return
+
+    # Если есть контекст из reply — передаём AI оба текста
+    if reply_context:
+        text = f"[Ответ на сообщение:]\n{reply_context}\n\n[Новая команда:]\n{text}"
 
     # В личке показываем статус, в группе — молчим до результата
     if not is_group:
@@ -3931,7 +3973,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Прайсы — выполняем без подтверждения, через очередь, без промежуточных сообщений
-    if action.get("action") in ("add_revenue", "add_affiliate_revenue", "set_prices"):
+    if action.get("action") in ("add_revenue", "add_affiliate_revenue", "set_prices", "bulk_schedule"):
         queue_size = _task_queue.qsize()
         if queue_size > 0 and not is_group:
             await update.message.reply_text(f"⏳ Queued, position #{queue_size + 1}…", disable_notification=True)
@@ -3939,7 +3981,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await enqueue(_execute_confirmed_task, context.bot, chat_id, action)
         return
 
-    if action.get("action") == "unknown" or (not action.get("broker_ids") and action.get("action") not in ("set_prices",)):
+    if action.get("action") == "unknown" or (not action.get("broker_ids") and action.get("action") not in ("set_prices", "bulk_schedule")):
         log.warning(f"Command not recognized. action={action}")
         # В группе молчим, в личке — показываем подсказку
         if not is_group:
