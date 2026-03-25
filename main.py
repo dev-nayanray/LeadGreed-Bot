@@ -157,10 +157,30 @@ SYSTEM_PROMPT = """
   Правило: 2-буквенный ISO код (HR, DE, FR, ID, NL, CZ, ES...) — это ВСЕГДА страна, НИКОГДА не часть имени брокера. Единственное исключение — "MM affiliates" (это имя брокера, не Мьянма).
 - ВАЖНО: Имена брокеров могут состоять из НЕСКОЛЬКИХ слов, но ТОЛЬКО в следующих случаях:
   • Суффикс CRG/CPA/CPL: "Fintrix CRG", "Nexus CPA", "Helios CRG", "Avelux CRG", "Clickbait CRG"
-  • Специальные имена: "Swin FR CRG", "Swin EN CRG", "Swin FR CRG duplicate", "Theta Holding", "MM affiliates"
+  • Специальные имена: "Swin FR CRG", "Swin EN CRG", "Swin FR CRG duplicate", "Swinftd CRG FR", "Swinftd CRG FR DUPLICATE", "Swinftd CRG ENG", "Swinftd FLAT FR", "Swinftd FLAT ENG", "Theta Holding", "MM affiliates"
   ИСКЛЮЧЕНИЕ: "MM affiliates" — это имя брокера, НЕ Мьянма. "UY MM affiliates 800" → broker_ids: ["MM affiliates"], countries: ["Uruguay"], amount: 800.
   Любое другое 2-буквенное слово после имени (DE, FR, HR, ID, NL...) — это СТРАНА, а не часть имени.
   Примеры: "Fintrix CRG DE 15 cap" → broker_ids: ["Fintrix CRG"], country: "Germany". "MediaNow HR 1350" → broker_ids: ["MediaNow"], country: "Croatia".
+
+ВАЖНО — правила маршрутизации Swin (Swinftd):
+"Swin" в CRM называется "Swinftd". У Swinftd есть несколько интеграций:
+  • Swinftd CRG FR (для Франции CRG)
+  • Swinftd CRG FR DUPLICATE (для Франции CRG, дубликат)
+  • Swinftd CRG ENG (для всех остальных стран CRG)
+  • Swinftd FLAT FR (для Франции CPA/flat)
+  • Swinftd FLAT ENG (для всех остальных стран CPA/flat)
+Правила выбора:
+  • Если в прайсе есть % (процент) → это CRG-интеграция
+  • Если страна = France → использовать FR-вариант
+  • Если страна ≠ France → использовать ENG-вариант
+Примеры:
+  "Swin HK eng 1550 12% (5% deduct)" → broker_ids: ["Swinftd CRG ENG"], countries: ["Hong Kong"], amount: 1550
+  "Swin FR 1400 10%" → broker_ids: ["Swinftd CRG FR"], countries: ["France"], amount: 1400
+  "Swin DE 1200" (без %) → broker_ids: ["Swinftd FLAT ENG"], countries: ["Germany"], amount: 1200
+  "Swin FR 1200" (без %) → broker_ids: ["Swinftd FLAT FR"], countries: ["France"], amount: 1200
+
+ВАЖНО — общее правило "процент = CRG":
+Если в строке с прайсом есть символ % — это CRG-прайс. Для брокеров у которых есть отдельные CRG/CPA интеграции, используй CRG-вариант.
 - Названия брокеров и аффилиатов могут быть написаны кириллицей — транслитерируй в латиницу. Примеры: "мн"→"MN", "нексус"→"Nexus", "марси"→"Marsi", "фара"→"Farah", "капитан"→"Capitan", "ройбис"→"RoiBees", "финтрикс"→"Fintrix". Общее правило транслитерации: м→M, н→N, к→K, с→S, р→R и т.д. Сохраняй регистр как в оригинальном названии если известно, иначе используй Title Case. Примеры: "белигия"→"Belgium", "аргентина"→"Argentina", "KE"→"Kenya", "NG"→"Nigeria", "DE"→"Germany", "UK"→"United Kingdom", "IT"→"Italy", "FR"→"France", "ES"→"Spain", "PL"→"Poland", "RO"→"Romania", "HU"→"Hungary", "CZ"→"Czech Republic", "PT"→"Portugal", "GR"→"Greece", "SE"→"Sweden", "NO"→"Norway", "FI"→"Finland", "DK"→"Denmark", "NL"→"Netherlands", "BE"→"Belgium", "AT"→"Austria", "CH"→"Switzerland", "TR"→"Turkey", "IL"→"Israel", "AE"→"United Arab Emirates", "SA"→"Saudi Arabia", "ZA"→"South Africa", "EG"→"Egypt", "MA"→"Morocco", "GH"→"Ghana", "TZ"→"Tanzania", "UG"→"Uganda", "ET"→"Ethiopia", "IN"→"India", "PK"→"Pakistan", "BD"→"Bangladesh", "ID"→"Indonesia", "TH"→"Thailand", "VN"→"Vietnam", "PH"→"Philippines", "MY"→"Malaysia", "SG"→"Singapore", "JP"→"Japan", "KR"→"Korea, Republic of", "CN"→"China", "AU"→"Australia", "NZ"→"New Zealand", "CA"→"Canada", "MX"→"Mexico", "CO"→"Colombia", "PE"→"Peru", "CL"→"Chile", "VE"→"Venezuela", "EC"→"Ecuador", "BO"→"Bolivia", "PY"→"Paraguay", "UY"→"Uruguay", "CR"→"Costa Rica", "DO"→"Dominican Republic", "GT"→"Guatemala", "HN"→"Honduras", "SV"→"El Salvador", "NI"→"Nicaragua", "PA"→"Panama", "CU"→"Cuba", "US"→"United States", "BR"→"Brazil", "AR"→"Argentina", "UA"→"Ukraine", "RU"→"Russia", "BY"→"Belarus", "KZ"→"Kazakhstan", "UZ"→"Uzbekistan", "AZ"→"Azerbaijan", "GE"→"Georgia", "AM"→"Armenia", "MD"→"Moldova", "LT"→"Lithuania", "LV"→"Latvia", "EE"→"Estonia", "BG"→"Bulgaria", "HR"→"Croatia", "RS"→"Serbia", "SK"→"Slovakia", "SI"→"Slovenia", "BA"→"Bosnia and Herzegovina", "AL"→"Albania", "MK"→"North Macedonia", "ME"→"Montenegro"
 - "завтра", "послезавтра" и т.д. переводи в название дня на английском (Monday/Tuesday/...)
 - Сегодняшняя дата и день будут переданы в запросе
@@ -378,7 +398,7 @@ SYSTEM_PROMPT = """
 
 ВАЖНО — правила для капы без affiliate_id:
 Следующие CRG-брокеры получают капу БЕЗ affiliate_id (поле affiliate_id НЕ добавлять в country_caps):
-Capitan, Legion, Fintrix CRG, Swin FR CRG, Swin FR CRG duplicate, Swin EN CRG, Avelux CRG, Clickbait CRG, Imperius, EMP, CMT, GLB, Capex, Helios CRG.
+Capitan, Legion, Fintrix CRG, Swin FR CRG, Swin FR CRG duplicate, Swin EN CRG, Swinftd CRG FR, Swinftd CRG FR DUPLICATE, Swinftd CRG ENG, Avelux CRG, Clickbait CRG, Imperius, EMP, CMT, GLB, Capex, Helios CRG.
 Если тип сделки CRG и брокер из этого списка — НЕ добавляй affiliate_id в капу.
 Если тип сделки CPA или брокер НЕ из этого списка — добавляй affiliate_id из первой строки в country_caps.
 
