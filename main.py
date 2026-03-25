@@ -106,6 +106,7 @@ SYSTEM_PROMPT = """
 - get_hours            — узнать текущие часы работы брокера для страны
 - change_caps          — изменить дневной лимит (cap) брокера для страны
 - lead_task            — комбинированная задача: поставить часы + капу одновременно (из лид-формы)
+- bulk_schedule        — расписание на выходные/конкретные дни: поставить часы + закрыть другие дни (skip missing countries)
 - unknown              — команда непонятна
 
 Структура JSON (общая):
@@ -427,28 +428,64 @@ Capitan, Legion, Fintrix CRG, Swin FR CRG, Swin FR CRG duplicate, Swin EN CRG, A
   GEO: BE FI NL NZ AU
   SUNDAY OFF (или OFF, или выходной)
 
+Или полное расписание брокера на выходные:
+  Nexus Schedule GMT+3
+  (28.03-29.03)
+  SATURDAY 😶
+  FR desk 14:00-20:00
+  GEO: FR
+  EN desk 11:00-18:00
+  GEO: BE FI NL NZ AU DK NO SE IE
+  PL desk 11:00-16:00
+  GEO: PL
+  RU desk 11:00-16:00
+  GEO: MD AZ KZ LT LV EE
+  BG desk 11:00-16:00
+  GEO: BG
+  CZ desk 11:00-16:00
+  GEO: CZ SK
+  HR desk 11:00-16:00
+  GEO: HR RS
+  DE desk 11:00-18:00
+  GEO: DE AT CH
+  SUNDAY 😶
+  OFF
+
 Правила разбора:
+- Первая строка содержит имя брокера (например "Nexus Schedule GMT+3" → broker_ids: ["Nexus"]). Слова "Schedule", "GMT+N", даты в скобках — ИГНОРИРУЙ.
 - Строка "X desk HH:MM-HH:MM" или "X desk HH:MM–HH:MM" — название деска и часы работы
 - Строка "GEO: XX YY ZZ" — страны (ISO коды) к которым применяются часы предыдущего деска. Переводи каждый код в полное английское название
-- Строка "SUNDAY OFF" / "OFF" / "выходной" — означает что воскресенье закрыто
-- Строка "SATURDAY OFF" — суббота закрыта
-- Если написано "поставь на выходные" — days_to_keep: ["Saturday","Sunday"], но корректируй с учётом OFF-строк (если SUNDAY OFF — убирай Sunday из days_to_keep)
-- Если написано "поставь на субботу" — days_to_keep: ["Saturday"]
-- Если написано "поставь на воскресенье" — days_to_keep: ["Sunday"]
-- Генерируй country_hours: один элемент на каждую страну из GEO with hours соответствующего деска
+- Строка "SATURDAY" или "SATURDAY 😶" — следующие блоки desk+GEO относятся к субботе
+- Строка "SUNDAY" или "SUNDAY 😶" — следующие блоки относятся к воскресенью
+- Строка "OFF" после дня — этот день полностью закрыт, добавь его в days_to_close
 - Слово "desk" игнорируй — оно не несёт смысла для CRM
-- Если пользователь задаёт РАЗНЫЕ hours for разных групп дней (например, рабочие 10-19 и суббота 10-15), используй поле "schedule_groups":
-  [
-    {"days": ["Monday","Tuesday","Wednesday","Thursday","Friday"], "start": "10:00", "end": "19:00"},
-    {"days": ["Saturday"], "start": "10:00", "end": "15:00"}
-  ]
-  "воскресенье закрыто" = не включать Sunday ни в одну группу.
-  В этом случае country_hours заполни по первой группе (рабочие дни), а schedule_groups — всеми группами.
-  Пример: "рабочие 10-19, суббота 10-15, воскресенье закрыто"
-  → schedule_groups: [
-      {"days": ["Monday","Tuesday","Wednesday","Thursday","Friday"], "start": "10:00", "end": "19:00"},
-      {"days": ["Saturday"], "start": "10:00", "end": "15:00"}
-    ]
+- Эмодзи (😶 и др.) — ИГНОРИРУЙ
+
+Если расписание содержит НЕСКОЛЬКО ДНЕЙ (например субботу с часами + воскресенье OFF) — используй action "bulk_schedule":
+{
+  "action": "bulk_schedule",
+  "broker_ids": ["Nexus"],
+  "country_hours": [
+    {"country": "France", "start": "14:00", "end": "20:00"},
+    {"country": "Belgium", "start": "11:00", "end": "18:00"},
+    {"country": "Finland", "start": "11:00", "end": "18:00"},
+    ...все страны из GEO-строк...
+  ],
+  "days_to_keep": ["Saturday"],
+  "days_to_close": ["Sunday"],
+  "skip_missing": true,
+  "no_traffic": true
+}
+
+ВАЖНО для bulk_schedule:
+- country_hours содержит ВСЕ страны из GEO-строк с часами соответствующего деска
+- days_to_keep — дни, для которых нужно поставить часы (Saturday)
+- days_to_close — дни, которые нужно закрыть (Sunday если OFF)
+- skip_missing: true — если страны нет у брокера, пропускать без ошибки
+- Генерируй country_hours: один элемент на КАЖДУЮ страну из КАЖДОЙ GEO-строки с часами соответствующего деска
+
+Если расписание только на ОДИН день (без close) — используй обычный "add_hours" с skip_missing: true.
+
 - Для desk-формата всегда ставь "skip_missing": true — не нужно добавлять страны которых not found for broker, только обновлять существующие
 
 Пример команды: "поставь hours for этих стран на субботу: JP desk 07:30-12:30 / GEO: JP / EN desk 11:00-17:00 / GEO: BE FI NL"
@@ -3197,6 +3234,27 @@ def build_confirm_text(action: dict) -> str:
             f"Confirm?"
         )
 
+    if a == "bulk_schedule":
+        brokers = ", ".join(str(b) for b in action.get("broker_ids", []))
+        ch_list = action.get("country_hours", [])
+        days_keep = ", ".join(action.get("days_to_keep", []))
+        days_close = ", ".join(action.get("days_to_close", []))
+        # Группируем по часам для компактности
+        from collections import defaultdict
+        hours_groups = defaultdict(list)
+        for ch in ch_list:
+            hours_groups[f"{ch['start']}–{ch['end']}"].append(ch['country'])
+        hours_lines = "\n".join(f"  • {h}: {', '.join(countries)}" for h, countries in hours_groups.items())
+        close_str = f"\nClose: {days_close}" if days_close else ""
+        return (
+            f"📋 *Confirmation required*\n\n"
+            f"Action: bulk schedule ({len(ch_list)} countries)\n"
+            f"Brokers: `{brokers}`\n"
+            f"Hours ({days_keep}):\n{hours_lines}{close_str}\n"
+            f"Skip missing: ✅ yes\n\n"
+            f"Confirm?"
+        )
+
     return f"📋 Action: `{a}`\n\nConfirm?"
 
 
@@ -3694,6 +3752,88 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                             sub_results.append(f"❌ Hours error: {hours_err}")
 
                 msg = "\n".join(sub_results)
+
+            elif a == "bulk_schedule":
+                # Расписание на выходные: часы + close days, skip missing
+                sub_results = []
+                country_hours_list = action.get("country_hours", [])
+                days_keep = action.get("days_to_keep", [])
+                days_close = action.get("days_to_close", [])
+
+                # Получаем существующие страны
+                existing_countries = []
+                try:
+                    page = await get_page()
+                    broker_base = await find_and_open_broker(page, str(broker_id))
+                    if broker_base:
+                        oh_url = f"{CRM_URL.rstrip('/')}{broker_base}/opening_hours"
+                        await page.goto(oh_url, wait_until="domcontentloaded", timeout=60000)
+                        existing_countries = await _scrape_countries_from_page(page)
+                        log.info(f"Existing countries for {broker_id}: {len(existing_countries)}")
+                except Exception as e:
+                    log.warning(f"Failed to get existing countries: {e}")
+
+                if not existing_countries:
+                    msg = "❌ Could not load broker's countries."
+                else:
+                    skipped = []
+                    updated = []
+
+                    # 1. Ставим часы для days_to_keep
+                    for ch in country_hours_list:
+                        country_name = ch.get("country", "")
+                        country_start = ch.get("start", "09:00")
+                        country_end = ch.get("end", "17:00")
+                        country_exists = any(country_name.lower() in ec.lower() for ec in existing_countries)
+
+                        if not country_exists:
+                            skipped.append(country_name)
+                            continue
+
+                        try:
+                            for day in days_keep:
+                                sub_msg = await action_edit_country_add_days(
+                                    broker_id=str(broker_id),
+                                    country=country_name,
+                                    start=country_start,
+                                    end=country_end,
+                                    no_traffic=action.get("no_traffic", True),
+                                    days_to_add=[day]
+                                )
+                                updated.append(f"{country_name} {day}: {country_start}-{country_end}")
+                        except Exception as e:
+                            sub_results.append(f"❌ {country_name}: {e}")
+
+                    # 2. Закрываем days_to_close для обновлённых стран
+                    if days_close and updated:
+                        unique_countries = list(dict.fromkeys(
+                            ch["country"] for ch in country_hours_list
+                            if any(ch["country"].lower() in ec.lower() for ec in existing_countries)
+                        ))
+                        for country_name in unique_countries:
+                            try:
+                                close_msg = await action_close_days(
+                                    broker_id=str(broker_id),
+                                    country=country_name,
+                                    days_to_close=days_close
+                                )
+                                # Не добавляем в sub_results если успешно — компактнее
+                                if "❌" in close_msg:
+                                    sub_results.append(f"❌ Close {country_name}: {close_msg}")
+                            except Exception as e:
+                                sub_results.append(f"❌ Close {country_name}: {e}")
+
+                    # Формируем итог
+                    if updated:
+                        days_str = ", ".join(days_keep)
+                        sub_results.insert(0, f"✅ Updated {len(updated)} countries for {days_str}")
+                    if days_close and updated:
+                        close_str = ", ".join(days_close)
+                        sub_results.append(f"✅ Closed {close_str} for {len(set(c.split()[0] for c in updated))} countries")
+                    if skipped:
+                        sub_results.append(f"⏭ Skipped (not found): {', '.join(skipped)}")
+
+                    msg = "\n".join(sub_results)
 
             else:
                 msg = f"⚠️ Действие '{a}' is not supported yet."
