@@ -997,7 +997,7 @@ async def find_and_open_broker(page: Page, broker_id: str, country_hint: str = N
 async def _scrape_countries_from_page(page) -> list:
     """Собрать список стран с текущей открытой страницы Opening Hours."""
     try:
-        await page.wait_for_selector("button.btn-primary.btn-sm, button.btn.btn-sm.btn-primary", timeout=8000)
+        await page.wait_for_selector("button.btn-primary.btn-sm, button.btn-outline-primary.btn-sm, button.btn.btn-sm.btn-primary, button.btn.btn-sm.btn-outline-primary", timeout=8000)
     except Exception:
         pass
     await page.wait_for_timeout(400)
@@ -1005,7 +1005,7 @@ async def _scrape_countries_from_page(page) -> list:
         const days = new Set(['monday','tuesday','wednesday','thursday','friday','saturday','sunday']);
         const result = [];
         document.querySelectorAll('table tr, .table tr').forEach(row => {
-            const hasBtn = row.querySelector('button.btn-primary.btn-sm, button.btn.btn-sm.btn-primary');
+            const hasBtn = row.querySelector('button.btn-primary.btn-sm, button.btn-outline-primary.btn-sm, button.btn.btn-sm.btn-primary, button.btn.btn-sm.btn-outline-primary');
             if (!hasBtn) return;
             const td = row.querySelector('td');
             if (!td) return;
@@ -1041,7 +1041,7 @@ async def action_change_hours(broker_id: str, start: str, end: str,
     # Собираем карандаши и имена стран для обработки
     async def collect_pencils():
         btns = await page.query_selector_all(
-            "button.btn-primary.btn-sm:not(.btn_big), button.btn.btn-sm.btn-primary:not(.float-right)"
+            "button.btn-primary.btn-sm, button.btn-outline-primary.btn-sm:not(.btn_big), button.btn.btn-sm.btn-primary, button.btn.btn-sm.btn-outline-primary:not(.float-right)"
         )
         result = []
         for btn in btns:
@@ -1191,13 +1191,13 @@ async def action_edit_country_add_days(broker_id: str, country: str, start: str,
     oh_url = f"{CRM_URL.rstrip('/')}{base_path}/opening_hours"
     await page.goto(oh_url, wait_until="domcontentloaded", timeout=60000)
     try:
-        await page.wait_for_selector("button.btn-primary.btn-sm, button.btn.btn-sm.btn-primary", timeout=12000)
+        await page.wait_for_selector("button.btn-primary.btn-sm, button.btn-outline-primary.btn-sm, button.btn.btn-sm.btn-primary, button.btn.btn-sm.btn-outline-primary", timeout=12000)
     except Exception:
         pass
     await page.wait_for_timeout(500)
 
     # Ищем карандаш нужной страны
-    edit_buttons = await page.query_selector_all("button.btn-primary.btn-sm, button.btn.btn-sm.btn-primary")
+    edit_buttons = await page.query_selector_all("button.btn-primary.btn-sm, button.btn-outline-primary.btn-sm, button.btn.btn-sm.btn-primary, button.btn.btn-sm.btn-outline-primary")
     target_pencil = None
     for btn in edit_buttons:
         if (await btn.inner_text()).strip():
@@ -1321,11 +1321,11 @@ async def action_add_country_hours_multi(broker_id: str, country: str,
     if country_exists:
         # Редактируем существующую запись
         try:
-            await page.wait_for_selector("button.btn-primary.btn-sm, button.btn.btn-sm.btn-primary", timeout=10000)
+            await page.wait_for_selector("button.btn-primary.btn-sm, button.btn-outline-primary.btn-sm, button.btn.btn-sm.btn-primary, button.btn.btn-sm.btn-outline-primary", timeout=10000)
         except Exception:
             pass
         await page.wait_for_timeout(400)
-        btns = await page.query_selector_all("button.btn-primary.btn-sm, button.btn.btn-sm.btn-primary")
+        btns = await page.query_selector_all("button.btn-primary.btn-sm, button.btn-outline-primary.btn-sm, button.btn.btn-sm.btn-primary, button.btn.btn-sm.btn-outline-primary")
         target = None
         for btn in btns:
             if (await btn.inner_text()).strip():
@@ -1727,7 +1727,7 @@ async def action_get_hours(broker_id: str, countries: list) -> str:
 
     # Ждём загрузки таблицы
     try:
-        await page.wait_for_selector("button.btn-primary.btn-sm, button.btn.btn-sm.btn-primary", timeout=10000)
+        await page.wait_for_selector("button.btn-primary.btn-sm, button.btn-outline-primary.btn-sm, button.btn.btn-sm.btn-primary, button.btn.btn-sm.btn-outline-primary", timeout=10000)
     except Exception:
         pass
     await page.wait_for_timeout(500)
@@ -2411,7 +2411,7 @@ async def action_close_days(broker_id: str, country: str, days_to_close: list) -
     # Ждём пока Vue отрендерит карандаши
     try:
         await page.wait_for_selector(
-            "button.btn-primary.btn-sm, button.btn.btn-sm.btn-primary",
+            "button.btn-primary.btn-sm, button.btn-outline-primary.btn-sm, button.btn.btn-sm.btn-primary, button.btn.btn-sm.btn-outline-primary",
             timeout=12000
         )
     except Exception:
@@ -2421,7 +2421,7 @@ async def action_close_days(broker_id: str, country: str, days_to_close: list) -
     log.info(f"Закрываю дни: {days_to_close} для страны: {country}")
 
     # Собираем все карандаши с именами стран
-    edit_buttons = await page.query_selector_all("button.btn-primary.btn-sm, button.btn.btn-sm.btn-primary")
+    edit_buttons = await page.query_selector_all("button.btn-primary.btn-sm, button.btn-outline-primary.btn-sm, button.btn.btn-sm.btn-primary, button.btn.btn-sm.btn-outline-primary")
     pencil_buttons = []
     for btn in edit_buttons:
         if not (await btn.inner_text()).strip():
@@ -2441,7 +2441,7 @@ async def action_close_days(broker_id: str, country: str, days_to_close: list) -
         for pencil, c_name in pencil_buttons:
             # После сохранения модалки страница перерендеривается — нужно заново найти карандаш
             await page.wait_for_timeout(300)
-            fresh_buttons = await page.query_selector_all("button.btn-primary.btn-sm, button.btn.btn-sm.btn-primary")
+            fresh_buttons = await page.query_selector_all("button.btn-primary.btn-sm, button.btn-outline-primary.btn-sm, button.btn.btn-sm.btn-primary, button.btn.btn-sm.btn-outline-primary")
             fresh_pencils = []
             for btn in fresh_buttons:
                 if not (await btn.inner_text()).strip():
@@ -4183,7 +4183,7 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                     oh_url = f"{CRM_URL.rstrip('/')}{broker_base}/opening_hours"
                     await page.goto(oh_url, wait_until="domcontentloaded", timeout=60000)
                     try:
-                        await page.wait_for_selector("button.btn-primary.btn-sm", timeout=12000)
+                        await page.wait_for_selector("button.btn-primary.btn-sm, button.btn-outline-primary.btn-sm", timeout=12000)
                     except Exception:
                         pass
                     await page.wait_for_timeout(500)
@@ -4208,7 +4208,7 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
 
                         try:
                             # Находим карандаш этой страны на уже открытой странице
-                            edit_buttons = await page.query_selector_all("button.btn-primary.btn-sm, button.btn.btn-sm.btn-primary")
+                            edit_buttons = await page.query_selector_all("button.btn-primary.btn-sm, button.btn-outline-primary.btn-sm, button.btn.btn-sm.btn-primary, button.btn.btn-sm.btn-outline-primary")
                             target_pencil = None
                             for btn in edit_buttons:
                                 if (await btn.inner_text()).strip():
