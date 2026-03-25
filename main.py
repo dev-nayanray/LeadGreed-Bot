@@ -3804,32 +3804,37 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                 msg = "\n".join(sub_results)
 
             elif a == "bulk_schedule":
-                # Расписание на выходные: часы + close days, skip missing
+                # Оптимизированное расписание: открываем страницу ОДИН раз,
+                # для каждой страны — карандаш → модалка → часы + close → save
                 sub_results = []
                 country_hours_list = action.get("country_hours", [])
                 days_keep = action.get("days_to_keep", [])
                 days_close = action.get("days_to_close", [])
+                days_keep_lower = [d.lower() for d in days_keep]
+                days_close_lower = [d.lower() for d in days_close]
 
-                # Получаем существующие страны
-                existing_countries = []
-                try:
-                    page = await get_page()
-                    broker_base = await find_and_open_broker(page, str(broker_id))
-                    if broker_base:
-                        oh_url = f"{CRM_URL.rstrip('/')}{broker_base}/opening_hours"
-                        await page.goto(oh_url, wait_until="domcontentloaded", timeout=60000)
-                        existing_countries = await _scrape_countries_from_page(page)
-                        log.info(f"Existing countries for {broker_id}: {len(existing_countries)}")
-                except Exception as e:
-                    log.warning(f"Failed to get existing countries: {e}")
-
-                if not existing_countries:
-                    msg = "❌ Could not load broker's countries."
+                # 1. Открываем страницу часов брокера ОДИН раз
+                page = await get_page()
+                broker_base = await find_and_open_broker(page, str(broker_id))
+                if not broker_base:
+                    msg = f"❌ Broker '{broker_id}' not found."
                 else:
+                    oh_url = f"{CRM_URL.rstrip('/')}{broker_base}/opening_hours"
+                    await page.goto(oh_url, wait_until="domcontentloaded", timeout=60000)
+                    try:
+                        await page.wait_for_selector("button.btn-primary.btn-sm", timeout=12000)
+                    except Exception:
+                        pass
+                    await page.wait_for_timeout(500)
+
+                    existing_countries = await _scrape_countries_from_page(page)
+                    log.info(f"Existing countries for {broker_id}: {len(existing_countries)}")
+
                     skipped = []
                     updated = []
+                    errors = []
 
-                    # 1. Ставим часы для days_to_keep
+                    # 2. Для каждой страны — находим карандаш, открываем модалку, ставим всё за раз
                     for ch in country_hours_list:
                         country_name = ch.get("country", "")
                         country_start = ch.get("start", "09:00")
@@ -3841,49 +3846,111 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                             continue
 
                         try:
-                            for day in days_keep:
-                                sub_msg = await action_edit_country_add_days(
-                                    broker_id=str(broker_id),
-                                    country=country_name,
-                                    start=country_start,
-                                    end=country_end,
-                                    no_traffic=action.get("no_traffic", True),
-                                    days_to_add=[day]
-                                )
-                                updated.append(f"{country_name} {day}: {country_start}-{country_end}")
-                        except Exception as e:
-                            sub_results.append(f"❌ {country_name}: {e}")
+                            # Находим карандаш этой страны на уже открытой странице
+                            edit_buttons = await page.query_selector_all("button.btn-primary.btn-sm, button.btn.btn-sm.btn-primary")
+                            target_pencil = None
+                            for btn in edit_buttons:
+                                if (await btn.inner_text()).strip():
+                                    continue
+                                c_name = await btn.evaluate("""el => {
+                                    const row = el.closest('tr');
+                                    return row ? row.querySelector('td')?.innerText?.trim() : '';
+                                }""")
+                                if country_name.lower() in c_name.lower():
+                                    target_pencil = btn
+                                    break
 
-                    # 2. Закрываем days_to_close для обновлённых стран
-                    if days_close and updated:
-                        unique_countries = list(dict.fromkeys(
-                            ch["country"] for ch in country_hours_list
-                            if any(ch["country"].lower() in ec.lower() for ec in existing_countries)
-                        ))
-                        for country_name in unique_countries:
+                            if not target_pencil:
+                                skipped.append(country_name)
+                                continue
+
+                            await target_pencil.click()
+                            await page.wait_for_timeout(600)
+
                             try:
-                                close_msg = await action_close_days(
-                                    broker_id=str(broker_id),
-                                    country=country_name,
-                                    days_to_close=days_close
-                                )
-                                # Не добавляем в sub_results если успешно — компактнее
-                                if "❌" in close_msg:
-                                    sub_results.append(f"❌ Close {country_name}: {close_msg}")
-                            except Exception as e:
-                                sub_results.append(f"❌ Close {country_name}: {e}")
+                                modal = await page.wait_for_selector(".modal-body, [role='dialog']", timeout=4000)
+                            except Exception:
+                                errors.append(f"{country_name}: modal didn't open")
+                                continue
 
-                    # Формируем итог
+                            await page.wait_for_timeout(400)
+
+                            sh, sm = (country_start.split(":") + ["00"])[:2]
+                            eh, em = (country_end.split(":") + ["00"])[:2]
+                            start_val = f"{sh.zfill(2)}:{sm.zfill(2)}"
+                            end_val = f"{eh.zfill(2)}:{em.zfill(2)}"
+
+                            # Проходим по чекбоксам дней в модалке
+                            checkboxes = await modal.query_selector_all("input[type='checkbox']")
+                            for cb in checkboxes:
+                                label_text = await cb.evaluate("el => el.closest('label,tr,div')?.textContent?.toLowerCase() || ''")
+                                if "no traffic" in label_text:
+                                    # Включаем no-traffic
+                                    if action.get("no_traffic", True) and not await cb.is_checked():
+                                        await cb.evaluate("el => el.click()")
+                                        await page.wait_for_timeout(80)
+                                    continue
+
+                                # Проверяем — этот день нужно включить (days_keep) или выключить (days_close)?
+                                is_keep_day = any(d in label_text for d in days_keep_lower)
+                                is_close_day = any(d in label_text for d in days_close_lower)
+
+                                if is_keep_day:
+                                    # Включаем + ставим часы
+                                    if not await cb.is_checked():
+                                        await cb.evaluate("el => el.click()")
+                                        await page.wait_for_timeout(80)
+                                    # Ставим время
+                                    await cb.evaluate(f"""el => {{
+                                        const row = el.closest('tr, .row, li, [class*="day"]');
+                                        if (!row) return;
+                                        const inputs = row.querySelectorAll('input.timepicker-input, input[class*="timepicker"]');
+                                        if (inputs[0]) {{
+                                            inputs[0].value = '{start_val}';
+                                            inputs[0].dispatchEvent(new Event('input', {{bubbles:true}}));
+                                            inputs[0].dispatchEvent(new Event('change', {{bubbles:true}}));
+                                        }}
+                                        if (inputs[1]) {{
+                                            inputs[1].value = '{end_val}';
+                                            inputs[1].dispatchEvent(new Event('input', {{bubbles:true}}));
+                                            inputs[1].dispatchEvent(new Event('change', {{bubbles:true}}));
+                                        }}
+                                    }}""")
+                                    await page.wait_for_timeout(80)
+                                elif is_close_day:
+                                    # Выключаем (снимаем галочку)
+                                    if await cb.is_checked():
+                                        await cb.evaluate("el => el.click()")
+                                        await page.wait_for_timeout(80)
+
+                            # Сохраняем
+                            try:
+                                save_btn = await page.wait_for_selector("text=SAVE OPENING HOURS", timeout=3000)
+                                await save_btn.click()
+                                await page.wait_for_timeout(700)
+                                updated.append(country_name)
+                                log.info(f"✅ {country_name}: {start_val}-{end_val} + close {days_close}")
+                            except Exception:
+                                await _close_modal(page)
+                                errors.append(f"{country_name}: save failed")
+
+                        except Exception as e:
+                            errors.append(f"{country_name}: {str(e)[:80]}")
+                            log.exception(f"bulk_schedule error for {country_name}")
+
+                    # 3. Формируем итог
                     if updated:
                         days_str = ", ".join(days_keep)
-                        sub_results.insert(0, f"✅ Updated {len(updated)} countries for {days_str}")
+                        sub_results.append(f"✅ Updated {len(updated)} countries for {days_str}")
                     if days_close and updated:
                         close_str = ", ".join(days_close)
-                        sub_results.append(f"✅ Closed {close_str} for {len(set(c.split()[0] for c in updated))} countries")
+                        sub_results.append(f"✅ Closed {close_str} for {len(updated)} countries")
                     if skipped:
-                        sub_results.append(f"⏭ Skipped (not found): {', '.join(skipped)}")
+                        sub_results.append(f"⏭ Skipped ({len(skipped)}): {', '.join(skipped)}")
+                    if errors:
+                        sub_results.append(f"❌ Errors ({len(errors)}): {', '.join(errors)}")
 
-                    msg = "\n".join(sub_results)
+                    msg = "\n".join(sub_results) if sub_results else "⚠️ Nothing to update."
 
             else:
                 msg = f"⚠️ Действие '{a}' is not supported yet."
