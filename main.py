@@ -158,13 +158,22 @@ SYSTEM_PROMPT = """
   Правило: 2-буквенный ISO код (HR, DE, FR, ID, NL, CZ, ES...) — это ВСЕГДА страна, НИКОГДА не часть имени брокера. Единственное исключение — "MM affiliates" (это имя брокера, не Мьянма).
 - ВАЖНО: Имена брокеров могут состоять из НЕСКОЛЬКИХ слов, но ТОЛЬКО в следующих случаях:
   • Суффикс CRG/CPA/CPL: "Fintrix CRG", "Nexus CPA", "Helios CRG", "Avelux CRG", "Clickbait CRG"
-  • Специальные имена: "Swin FR CRG", "Swin EN CRG", "Swin FR CRG duplicate", "Swinftd CRG FR", "Swinftd CRG FR DUPLICATE", "Swinftd CRG ENG", "Swinftd FLAT FR", "Swinftd FLAT ENG", "Theta Holding", "MM affiliates"
+  • Специальные имена: "Swin FR CRG", "Swin EN CRG", "Swin FR CRG duplicate", "Swinftd CRG FR", "Swinftd CRG FR DUPLICATE", "Swinftd CRG ENG", "Swinftd FLAT FR", "Swinftd FLAT ENG", "Theta Holding", "MM affiliates", "PRX_AVE", "PRX_AVE CPA"
   ИСКЛЮЧЕНИЕ: "MM affiliates" — это имя брокера, НЕ Мьянма. "UY MM affiliates 800" → broker_ids: ["MM affiliates"], countries: ["Uruguay"], amount: 800.
   Любое другое 2-буквенное слово после имени (DE, FR, HR, ID, NL...) — это СТРАНА, а не часть имени.
   Примеры: "Fintrix CRG DE 15 cap" → broker_ids: ["Fintrix CRG"], country: "Germany". "MediaNow HR 1350" → broker_ids: ["MediaNow"], country: "Croatia".
 
 ВАЖНО — правила маршрутизации Swin (Swinftd):
 "Swin" в CRM называется "Swinftd". У Swinftd есть несколько интеграций:
+
+ВАЖНО — маппинг AVE (PRX_AVE):
+"AVE" в CRM называется "PRX_AVE". У PRX_AVE есть два варианта:
+  • PRX_AVE CPA (ID 2822) — для CPA-прайсов (без процента)
+  • PRX_AVE (ID 2812) — для CRG-прайсов (с процентом)
+Примеры:
+  "AVE CRG DE 1650 16%" → broker_ids: ["PRX_AVE"], countries: ["Germany"], amount: 1650 (CRG = без CPA суффикса)
+  "AVE CPA DE 1200" → broker_ids: ["PRX_AVE CPA"], countries: ["Germany"], amount: 1200
+  "AVE DE 1650 16%" → broker_ids: ["PRX_AVE"], countries: ["Germany"], amount: 1650 (есть % = CRG)
   • Swinftd CRG FR (для Франции CRG)
   • Swinftd CRG FR DUPLICATE (для Франции CRG, дубликат)
   • Swinftd CRG ENG (для всех остальных стран CRG)
