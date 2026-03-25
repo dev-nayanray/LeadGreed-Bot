@@ -4357,7 +4357,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Прайсы — выполняем без подтверждения, через очередь, без промежуточных сообщений
-    if action.get("action") in ("add_revenue", "add_affiliate_revenue", "set_prices", "bulk_schedule"):
+    if action.get("action") in ("add_revenue", "add_affiliate_revenue", "set_prices", "bulk_schedule", "multi_broker_task"):
         queue_size = _task_queue.qsize()
         if queue_size > 0 and not is_group:
             await update.message.reply_text(f"⏳ Queued, position #{queue_size + 1}…", disable_notification=True)
