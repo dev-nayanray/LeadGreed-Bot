@@ -3126,25 +3126,30 @@ async def _add_affiliate_parameter(page, modal, affiliate_id, close_dropdown: bo
             if aff_inp:
                 inp_id = await aff_inp.get_attribute("id")
                 log.info(f"Aff search input: {inp_id}, searching for aff {aff_id}")
-                # Очищаем поле и вводим через JS (надёжнее для Vue)
-                await aff_inp.evaluate("""el => {
-                    el.value = '';
-                    el.dispatchEvent(new Event('input', {bubbles: true}));
-                }""")
-                await page.wait_for_timeout(400)
-                # Вводим новый ID
-                await aff_inp.evaluate(f"""el => {{
-                    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-                        window.HTMLInputElement.prototype, 'value').set;
-                    nativeInputValueSetter.call(el, '{aff_id}');
-                    el.dispatchEvent(new Event('input', {{bubbles: true}}));
-                    el.dispatchEvent(new KeyboardEvent('keydown', {{bubbles: true}}));
-                    el.dispatchEvent(new KeyboardEvent('keyup', {{bubbles: true}}));
-                }}""")
-                log.info(f"Set search value to '{aff_id}' via JS")
+                # Фокус на поле
+                await aff_inp.focus()
+                await page.wait_for_timeout(200)
+                # Тройной клик чтобы выделить всё
+                await aff_inp.click(click_count=3)
+                await page.wait_for_timeout(100)
+                # Удаляем выделенное
+                await page.keyboard.press("Delete")
+                await page.wait_for_timeout(300)
+                # Проверяем что поле пустое
+                val = await aff_inp.input_value()
+                if val:
+                    # Если не очистилось — пробуем ещё раз
+                    await aff_inp.click(click_count=3)
+                    await page.keyboard.press("Backspace")
+                    await page.wait_for_timeout(300)
+                # Вводим новый ID посимвольно через клавиатуру
+                for char in str(aff_id):
+                    await page.keyboard.press(char)
+                    await page.wait_for_timeout(100)
+                log.info(f"Typed '{aff_id}' char by char via keyboard")
                 # Ждём Vue фильтрацию
-                await page.wait_for_timeout(600)
-                for _ in range(15):
+                await page.wait_for_timeout(800)
+                for _ in range(10):
                     await page.wait_for_timeout(300)
                     cnt_check = await page.evaluate(
                         "() => document.querySelectorAll('li.flex-fill, li.dropdown-item').length"
