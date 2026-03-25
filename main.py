@@ -2053,10 +2053,12 @@ async def action_add_revenue(broker_id: str, country: str, amount: str, affiliat
     old_amount = None
     if country.lower() != "all":
         try:
-            await page.wait_for_selector("table tr td", timeout=5000)
+            await page.wait_for_selector("table tr td", timeout=8000)
         except Exception:
             pass
+        await page.wait_for_timeout(1500)
         rows = await page.query_selector_all("table tr")
+        log.info(f"Revenue table rows found: {len(rows)}")
         for row in rows:
             country_td = await row.query_selector("td:first-child")
             if not country_td:
@@ -2071,6 +2073,8 @@ async def action_add_revenue(broker_id: str, country: str, amount: str, affiliat
                 if existing_pencil:
                     log.info(f"Entry for {country} already exists (${old_amount}) — editing")
                     break
+                else:
+                    log.info(f"Found {country} row (${old_amount}) but no pencil button")
 
     if existing_pencil:
         await existing_pencil.click()
