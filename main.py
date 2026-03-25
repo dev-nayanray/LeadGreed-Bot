@@ -49,6 +49,16 @@ _page: Optional[Page] = None
 # Хранилище ожидающих подтверждения команд
 pending: dict = {}
 
+# Последнее найденное полное имя брокера (заполняется в find_and_open_broker)
+_last_broker_full_name: str = ""
+
+# LATAM страны — для автоматической маршрутизации к "Latam" вариантам брокеров
+LATAM_COUNTRIES = {
+    "brazil", "mexico", "colombia", "argentina", "chile", "peru", "ecuador",
+    "venezuela", "bolivia", "paraguay", "uruguay", "costa rica", "panama",
+    "dominican republic", "guatemala", "honduras", "el salvador", "nicaragua", "cuba"
+}
+
 # ══════════════════════════════════════════
 #  ОЧЕРЕДЬ ЗАДАЧ
 # ══════════════════════════════════════════
@@ -142,10 +152,11 @@ SYSTEM_PROMPT = """
   • "легион де" → broker_ids: ["Legion"], countries: ["Germany"]. НЕ broker_ids: ["Legion DE"]!
   • "Helios ID 1050" → broker_ids: ["Helios"], countries: ["Indonesia"], amount: 1050. НЕ broker_ids: ["Helios ID"]!
   • "Theta NL 1650" → broker_ids: ["Theta"], countries: ["Netherlands"], amount: 1650
-  Правило: 2-буквенный ISO код (HR, DE, FR, ID, NL, CZ, ES...) — это ВСЕГДА страна, НИКОГДА не часть имени брокера.
+  Правило: 2-буквенный ISO код (HR, DE, FR, ID, NL, CZ, ES...) — это ВСЕГДА страна, НИКОГДА не часть имени брокера. Единственное исключение — "MM affiliates" (это имя брокера, не Мьянма).
 - ВАЖНО: Имена брокеров могут состоять из НЕСКОЛЬКИХ слов, но ТОЛЬКО в следующих случаях:
   • Суффикс CRG/CPA/CPL: "Fintrix CRG", "Nexus CPA", "Helios CRG", "Avelux CRG", "Clickbait CRG"
-  • Специальные имена: "Swin FR CRG", "Swin EN CRG", "Swin FR CRG duplicate", "Theta Holding"
+  • Специальные имена: "Swin FR CRG", "Swin EN CRG", "Swin FR CRG duplicate", "Theta Holding", "MM affiliates"
+  ИСКЛЮЧЕНИЕ: "MM affiliates" — это имя брокера, НЕ Мьянма. "UY MM affiliates 800" → broker_ids: ["MM affiliates"], countries: ["Uruguay"], amount: 800.
   Любое другое 2-буквенное слово после имени (DE, FR, HR, ID, NL...) — это СТРАНА, а не часть имени.
   Примеры: "Fintrix CRG DE 15 cap" → broker_ids: ["Fintrix CRG"], country: "Germany". "MediaNow HR 1350" → broker_ids: ["MediaNow"], country: "Croatia".
 - Названия брокеров и аффилиатов могут быть написаны кириллицей — транслитерируй в латиницу. Примеры: "мн"→"MN", "нексус"→"Nexus", "марси"→"Marsi", "фара"→"Farah", "капитан"→"Capitan", "ройбис"→"RoiBees", "финтрикс"→"Fintrix". Общее правило транслитерации: м→M, н→N, к→K, с→S, р→R и т.д. Сохраняй регистр как в оригинальном названии если известно, иначе используй Title Case. Примеры: "белигия"→"Belgium", "аргентина"→"Argentina", "KE"→"Kenya", "NG"→"Nigeria", "DE"→"Germany", "UK"→"United Kingdom", "IT"→"Italy", "FR"→"France", "ES"→"Spain", "PL"→"Poland", "RO"→"Romania", "HU"→"Hungary", "CZ"→"Czech Republic", "PT"→"Portugal", "GR"→"Greece", "SE"→"Sweden", "NO"→"Norway", "FI"→"Finland", "DK"→"Denmark", "NL"→"Netherlands", "BE"→"Belgium", "AT"→"Austria", "CH"→"Switzerland", "TR"→"Turkey", "IL"→"Israel", "AE"→"United Arab Emirates", "SA"→"Saudi Arabia", "ZA"→"South Africa", "EG"→"Egypt", "MA"→"Morocco", "GH"→"Ghana", "TZ"→"Tanzania", "UG"→"Uganda", "ET"→"Ethiopia", "IN"→"India", "PK"→"Pakistan", "BD"→"Bangladesh", "ID"→"Indonesia", "TH"→"Thailand", "VN"→"Vietnam", "PH"→"Philippines", "MY"→"Malaysia", "SG"→"Singapore", "JP"→"Japan", "KR"→"Korea, Republic of", "CN"→"China", "AU"→"Australia", "NZ"→"New Zealand", "CA"→"Canada", "MX"→"Mexico", "CO"→"Colombia", "PE"→"Peru", "CL"→"Chile", "VE"→"Venezuela", "EC"→"Ecuador", "BO"→"Bolivia", "PY"→"Paraguay", "UY"→"Uruguay", "CR"→"Costa Rica", "DO"→"Dominican Republic", "GT"→"Guatemala", "HN"→"Honduras", "SV"→"El Salvador", "NI"→"Nicaragua", "PA"→"Panama", "CU"→"Cuba", "US"→"United States", "BR"→"Brazil", "AR"→"Argentina", "UA"→"Ukraine", "RU"→"Russia", "BY"→"Belarus", "KZ"→"Kazakhstan", "UZ"→"Uzbekistan", "AZ"→"Azerbaijan", "GE"→"Georgia", "AM"→"Armenia", "MD"→"Moldova", "LT"→"Lithuania", "LV"→"Latvia", "EE"→"Estonia", "BG"→"Bulgaria", "HR"→"Croatia", "RS"→"Serbia", "SK"→"Slovakia", "SI"→"Slovenia", "BA"→"Bosnia and Herzegovina", "AL"→"Albania", "MK"→"North Macedonia", "ME"→"Montenegro"
@@ -539,12 +550,20 @@ async def do_login():
     alog.set_status("last_login", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 
-async def find_and_open_broker(page: Page, broker_id: str) -> Optional[str]:
+async def find_and_open_broker(page: Page, broker_id: str, country_hint: str = None) -> Optional[str]:
     """
     Найти брокера и вернуть его base path (/clients/ID).
     Возвращает None если брокер not found.
+    country_hint — название страны, для LATAM-маршрутизации.
     """
+    global _last_broker_full_name
+    _last_broker_full_name = broker_id  # fallback
     broker_id = str(broker_id).strip()
+
+    # Определяем, нужен ли LATAM-вариант
+    is_latam = False
+    if country_hint and country_hint.lower() in LATAM_COUNTRIES:
+        is_latam = True
 
     # Если ID числовой — идём напрямую, без поиска
     if broker_id.isdigit():
@@ -653,6 +672,7 @@ async def find_and_open_broker(page: Page, broker_id: str) -> Optional[str]:
     for row in rows:
         if row["name"].lower().strip() == query_lower:
             log.info(f"Exact match: {row['name']}")
+            _last_broker_full_name = row["name"]
             href = row["href"].replace("/settings", "")
             return href
 
@@ -663,31 +683,45 @@ async def find_and_open_broker(page: Page, broker_id: str) -> Optional[str]:
         clean = re.sub(r"^\d+\s*-\s*", "", name_lower).strip()
         if clean == query_lower or name_lower == query_lower:
             log.info(f"Match after prefix cleanup: {row['name']}")
+            _last_broker_full_name = row["name"]
             return row["href"].replace("/settings", "")
 
-    # 3. Частичное совпадение — предпочитаем CPA, затем кратчайшее имя
+    # 3. Частичное совпадение — с учётом LATAM-маршрутизации
     partial = [r for r in rows if query_lower in r["name"].lower()]
     if partial:
+        # LATAM: если страна латам — предпочитаем вариант с "latam" в имени
+        if is_latam:
+            latam_matches = [r for r in partial if "latam" in r["name"].lower()]
+            if latam_matches:
+                best = min(latam_matches, key=lambda r: len(r["name"]))
+                log.info(f"LATAM preferred: {best['name']}")
+                _last_broker_full_name = best["name"]
+                return best["href"].replace("/settings", "")
+
         # Если в запросе явно указан CRG — берём CRG
         if "crg" in query_lower:
             crg = [r for r in partial if "crg" in r["name"].lower()]
             if crg:
                 best = min(crg, key=lambda r: len(r["name"]))
                 log.info(f"Selected CRG by query: {best['name']}")
+                _last_broker_full_name = best["name"]
                 return best["href"].replace("/settings", "")
         # Иначе предпочитаем CPA
         cpa = [r for r in partial if "cpa" in r["name"].lower()]
         if cpa:
             best = min(cpa, key=lambda r: len(r["name"]))
             log.info(f"Preferred CPA: {best['name']}")
+            _last_broker_full_name = best["name"]
             return best["href"].replace("/settings", "")
         # Нет ни CPA ни CRG — берём кратчайшее
         best = min(partial, key=lambda r: len(r["name"]))
         log.info(f"Partial match (shortest): {best['name']}")
+        _last_broker_full_name = best["name"]
         return best["href"].replace("/settings", "")
 
     # 4. Первый результат как запасной
     log.info(f"Taking first result: {rows[0]['name']}")
+    _last_broker_full_name = rows[0]["name"]
     return rows[0]["href"].replace("/settings", "")
 
 
@@ -1806,11 +1840,9 @@ async def action_add_revenue(broker_id: str, country: str, amount: str, affiliat
     """Добавить или обновить прайс (revenue) для страны брокера."""
     page = await get_page()
 
-    base_path = await find_and_open_broker(page, broker_id)
+    base_path = await find_and_open_broker(page, broker_id, country_hint=country)
     if not base_path:
         return f"❌ Broker '{broker_id}' not found. Nothing changed."
-
-    # Переходим на страницу FTDs Revenue
     rev_url = f"{CRM_URL.rstrip('/')}{base_path}/revenues"
     await page.goto(rev_url, wait_until="domcontentloaded", timeout=60000)
     await page.wait_for_timeout(1000)
@@ -3171,7 +3203,8 @@ async def _execute_get_task(bot, chat_id: int, action: dict, text: str):
                                           ", ".join(action.get("countries", [])), "pending", user_command=text)
                     result = await action_get_broker_revenue(str(bid), action.get("countries", []))
                     alog.update_action(lid, "success" if "❌" not in result else "error", result[:200])
-                    await bot.send_message(chat_id, f"*Broker {escape_md(str(bid))}:*\n{escape_md(result)}", parse_mode="Markdown", disable_notification=True)
+                    display_name = _last_broker_full_name if _last_broker_full_name != str(bid) else str(bid)
+                    await bot.send_message(chat_id, f"*Broker {escape_md(display_name)}:*\n{escape_md(result)}", parse_mode="Markdown", disable_notification=True)
             else:
                 aff_id = str(action.get("affiliate_id") or action.get("broker_ids", ["?"])[0])
                 lid = alog.log_action("get_affiliate_revenue", aff_id,
@@ -3186,7 +3219,8 @@ async def _execute_get_task(bot, chat_id: int, action: dict, text: str):
                                       ", ".join(action.get("countries", ["all"])), "pending", user_command=text)
                 result = await action_get_hours(str(bid), action.get("countries", ["all"]))
                 alog.update_action(lid, "success" if "❌" not in result else "error", result[:200])
-                await bot.send_message(chat_id, f"*Broker {escape_md(str(bid))}:*\n{escape_md(result)}", parse_mode="Markdown", disable_notification=True)
+                display_name = _last_broker_full_name if _last_broker_full_name != str(bid) else str(bid)
+                await bot.send_message(chat_id, f"*Broker {escape_md(display_name)}:*\n{escape_md(result)}", parse_mode="Markdown", disable_notification=True)
 
         elif a == "get_caps":
             for bid in action.get("broker_ids", []):
@@ -3603,9 +3637,11 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
 
             if a in ("add_affiliate_revenue",):
                 label = "Aff"
+                display_name = str(broker_id)
             else:
                 label = "Broker"
-            results.append(f"*{label} {escape_md(str(broker_id))}:*\n{escape_md(msg)}")
+                display_name = _last_broker_full_name if _last_broker_full_name != str(broker_id) else str(broker_id)
+            results.append(f"*{label} {escape_md(display_name)}:*\n{escape_md(msg)}")
 
         # Update logs
         for i, lid in enumerate(log_ids):
