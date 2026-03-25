@@ -100,6 +100,7 @@ SYSTEM_PROMPT = """
 - add_revenue   — добавить прайс/выплату для страны broker
 - toggle_broker — включить / выключить broker
 - add_affiliate_revenue — добавить прайс/выплату для аффилиата
+- set_prices            — добавить прайсы для НЕСКОЛЬКИХ объектов (брокер + аффилиат) в одном сообщении
 - get_affiliate_revenue — узнать прайс аффилиата для страны
 - get_broker_revenue   — узнать прайс брокера для страны
 - get_hours            — узнать текущие часы работы брокера для страны
@@ -248,6 +249,33 @@ SYSTEM_PROMPT = """
     {"type": "affiliate", "id": "159",   "countries": ["Germany"]},
     {"type": "broker",    "id": "Nexus", "countries": ["Germany"]}
   ]}
+- Для add_affiliate_revenue: affiliate_id = ID аффилиата (число), country_revenues = список {country, amount}
+
+Если пользователь добавляет прайсы для НЕСКОЛЬКИХ объектов (брокер И аффилиат) сразу — используй action "set_prices" с полем "price_tasks":
+{
+  "action": "set_prices",
+  "broker_ids": [],
+  "price_tasks": [
+    {"type": "broker",    "id": "MM affiliates", "country": "Uruguay", "amount": 800},
+    {"type": "affiliate", "id": "60",            "country": "Uruguay", "amount": 700}
+  ]
+}
+Примеры:
+  "UY MM affiliates 800
+   60 aff UY 700"
+→ {"action": "set_prices", "broker_ids": [], "price_tasks": [
+    {"type": "broker", "id": "MM affiliates", "country": "Uruguay", "amount": 800},
+    {"type": "affiliate", "id": "60", "country": "Uruguay", "amount": 700}
+  ]}
+  "Capex CL 950 CPA
+   28 aff CL 600"
+→ {"action": "set_prices", "broker_ids": [], "price_tasks": [
+    {"type": "broker", "id": "Capex", "country": "Chile", "amount": 950},
+    {"type": "affiliate", "id": "28", "country": "Chile", "amount": 600}
+  ]}
+Используй set_prices когда в сообщении есть И прайс для брокера, И прайс для аффилиата.
+Если только прайс для брокера — используй add_revenue. Если только для аффилиата — используй add_affiliate_revenue.
+
 - Для add_affiliate_revenue: affiliate_id = ID аффилиата (число), country_revenues = список {country, amount}
   Формат может быть любым из:
   • "добавь прайс для аффа 159 / FR 1300 / ES 1500"
@@ -3247,6 +3275,41 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
         results = []
         a = action["action"]
 
+        # set_prices — мульти-прайс (брокер + аффилиат в одном сообщении)
+        if a == "set_prices":
+            price_tasks = action.get("price_tasks", [])
+            for pt in price_tasks:
+                pt_type = pt.get("type", "broker")
+                pt_id = str(pt.get("id", ""))
+                pt_country = pt.get("country", "")
+                pt_amount = str(pt.get("amount", ""))
+                lid = alog.log_action(f"set_prices_{pt_type}", pt_id, f"{pt_country} ${pt_amount}",
+                                      "pending", user_command=user_cmd)
+                log_ids.append(lid)
+                try:
+                    if pt_type == "affiliate":
+                        sub_msg = await action_add_affiliate_revenue(pt_id, pt_country, pt_amount)
+                        results.append(f"*Aff {escape_md(pt_id)}:*\n{escape_md(sub_msg)}")
+                    else:
+                        sub_msg = await action_add_revenue(pt_id, pt_country, pt_amount)
+                        display_name = _last_broker_full_name if _last_broker_full_name != pt_id else pt_id
+                        results.append(f"*Broker {escape_md(display_name)}:*\n{escape_md(sub_msg)}")
+                    alog.update_action(lid, "success" if "❌" not in sub_msg else "error", sub_msg[:200])
+                except Exception as e:
+                    results.append(f"*{pt_type} {escape_md(pt_id)}:*\n❌ {escape_md(str(e))}")
+                    alog.update_action(lid, "error", str(e)[:200])
+
+            alog.set_status("last_action", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            msg_text = "\n\n".join(results) or "✅ Done."
+            for attempt in range(3):
+                try:
+                    await bot.send_message(chat_id, msg_text, parse_mode="Markdown", disable_notification=True)
+                    break
+                except Exception:
+                    if attempt < 2:
+                        await asyncio.sleep(3)
+            return
+
         for broker_id in action.get("broker_ids", []):
             lid = alog.log_action(a, str(broker_id), json.dumps(action, ensure_ascii=False)[:300],
                                   "pending", user_command=user_cmd)
@@ -3728,7 +3791,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Прайсы — выполняем без подтверждения, через очередь, без промежуточных сообщений
-    if action.get("action") in ("add_revenue", "add_affiliate_revenue"):
+    if action.get("action") in ("add_revenue", "add_affiliate_revenue", "set_prices"):
         queue_size = _task_queue.qsize()
         if queue_size > 0 and not is_group:
             await update.message.reply_text(f"⏳ Queued, position #{queue_size + 1}…", disable_notification=True)
@@ -3736,7 +3799,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await enqueue(_execute_confirmed_task, context.bot, chat_id, action)
         return
 
-    if action.get("action") == "unknown" or not action.get("broker_ids"):
+    if action.get("action") == "unknown" or (not action.get("broker_ids") and action.get("action") not in ("set_prices",)):
         log.warning(f"Command not recognized. action={action}")
         # В группе молчим, в личке — показываем подсказку
         if not is_group:
