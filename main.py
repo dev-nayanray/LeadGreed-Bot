@@ -3086,20 +3086,34 @@ async def _add_affiliate_parameter(page, modal, affiliate_id, close_dropdown: bo
         for aff_idx, aff_id in enumerate(aff_ids):
             # Для 2-го и последующих аффов — переоткрываем дропдаун
             if aff_idx > 0:
-                await page.evaluate("""() => {
-                    const labels = document.querySelectorAll('label');
-                    for (const lbl of labels) {
-                        const t = lbl.innerText.trim().toLowerCase();
-                        if (t === 'affiliate' || t === 'affiliates') {
-                            const row = lbl.closest('.form-row, .form-group');
-                            const inner = row?.querySelector('.smart__dropdown__input__element') ||
-                                          row?.querySelector('[class*="cursor-pointer"]') ||
-                                          row?.querySelector('[class*="smart__dropdown"]');
-                            if (inner) { inner.click(); return; }
+                # Кликаем на дропдаун аффов чтобы открыть его
+                for reopen_attempt in range(3):
+                    await page.evaluate("""() => {
+                        const labels = document.querySelectorAll('label');
+                        for (const lbl of labels) {
+                            const t = lbl.innerText.trim().toLowerCase();
+                            if (t === 'affiliate' || t === 'affiliates') {
+                                const row = lbl.closest('.form-row, .form-group');
+                                const inner = row?.querySelector('.smart__dropdown__input__element') ||
+                                              row?.querySelector('[class*="cursor-pointer"]') ||
+                                              row?.querySelector('[class*="smart__dropdown"]');
+                                if (inner) { inner.click(); return; }
+                            }
                         }
-                    }
-                }""")
-                await page.wait_for_timeout(600)
+                    }""")
+                    await page.wait_for_timeout(800)
+                    # Проверяем появился ли search input
+                    check = await page.evaluate("""() => {
+                        const inputs = document.querySelectorAll('input[id*="search-input"], input[id*="search"]');
+                        for (const inp of inputs) {
+                            if (inp.offsetParent !== null) return true;
+                        }
+                        return false;
+                    }""")
+                    if check:
+                        break
+                    log.info(f"Reopen attempt {reopen_attempt+1}: search input not visible yet")
+                    await page.wait_for_timeout(500)
 
             # Search input аффов — берём последний видимый
             aff_inp = None
