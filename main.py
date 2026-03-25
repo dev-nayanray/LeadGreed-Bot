@@ -3105,7 +3105,16 @@ async def _add_affiliate_parameter(page, modal, affiliate_id, close_dropdown: bo
                 inp_id = await aff_inp.get_attribute("id")
                 log.info(f"Aff search input: {inp_id}, searching for aff {aff_id}")
                 await aff_inp.click()
-                # Очищаем поле перед вводом (важно для 2-го и последующих аффов)
+                # Очищаем поле перед вводом
+                await aff_inp.evaluate(f"""el => {{
+                    const setter = Object.getOwnPropertyDescriptor(
+                        window.HTMLInputElement.prototype, 'value').set;
+                    setter.call(el, '');
+                    el.dispatchEvent(new Event('input', {{bubbles: true}}));
+                    el.dispatchEvent(new KeyboardEvent('keyup', {{bubbles: true}}));
+                }}""")
+                await page.wait_for_timeout(400)
+                # Вводим ID аффилиата
                 await aff_inp.evaluate(f"""el => {{
                     const setter = Object.getOwnPropertyDescriptor(
                         window.HTMLInputElement.prototype, 'value').set;
