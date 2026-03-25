@@ -767,16 +767,15 @@ async def find_and_open_broker(page: Page, broker_id: str, country_hint: str = N
         if "login" not in current and "/clients?" not in current:
             # Читаем полное имя брокера со страницы
             try:
-                full_name = await page.evaluate("""() => {
-                    // Ищем заголовок с именем брокера
-                    const h = document.querySelector('h1, h2, h3, .page-title, .broker-name');
-                    if (h) return h.innerText.trim();
-                    // Fallback: title страницы или первый крупный текст
-                    const title = document.title || '';
-                    if (title) return title.split('|')[0].trim();
-                    return '';
-                }""")
-                if full_name and len(full_name) > 2:
+                body_text = await page.evaluate("() => document.body?.innerText?.substring(0, 2000) || ''")
+                # Ищем паттерн "NNNN - BrokerName" в тексте
+                pattern = re.compile(rf'\b{broker_id}\s*-\s*([^\n]+)', re.IGNORECASE)
+                match = pattern.search(body_text)
+                if match:
+                    full_name = f"{broker_id} - {match.group(1).strip()}"
+                    # Обрезаем если слишком длинное (убираем описание после имени)
+                    if len(full_name) > 60:
+                        full_name = full_name[:60].rsplit(' ', 1)[0]
                     _last_broker_full_name = full_name
                     log.info(f"Broker full name from page: {full_name}")
             except Exception:
