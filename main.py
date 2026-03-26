@@ -210,6 +210,11 @@ SYSTEM_PROMPT = """
 - ВАЖНО: close_days требует конкретную страну. Если страна не указана — ставь "country": "all" (закрыть все страны).
   "Legion DE pause" → country: "Germany". "Universo Friday off" → country: "all" (все страны).
 - Для close_days: days_to_close = список дней которые нужно закрыть
+  • "pause" / "paused" без дня → закрыть ТОЛЬКО сегодня
+  • "close" / "off" без конкретного дня → закрыть ВСЕ рабочие дни (Mon-Fri): days_to_close: ["Monday","Tuesday","Wednesday","Thursday","Friday"]
+  • "Friday off" → только пятницу: days_to_close: ["Friday"]
+  • "close weekend" → days_to_close: ["Saturday","Sunday"]
+  Примеры: "Axia close AR BR CL" → days_to_close: ["Monday","Tuesday","Wednesday","Thursday","Friday"] (все рабочие)
 - ВАЖНО: Правило различения брокера и аффилиата при запросе прайса:
   • Просто число + страны + "прайс/price" → ЭТО АФФИЛИАТ (get_affiliate_revenue)
     Примеры: "28 прайс испания", "159 DE price", "28 франция прайс"
