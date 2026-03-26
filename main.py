@@ -1078,11 +1078,12 @@ async def _read_current_hours_for_country(page, country: str) -> dict:
 
 async def action_change_hours(broker_id: str, start: str, end: str,
                                countries_filter: list, no_traffic: bool,
-                               days_filter: list = None) -> str:
+                               days_filter: list = None, base_path: str = None) -> str:
     """Изменить часы работы брокера."""
     page = await get_page()
 
-    base_path = await find_and_open_broker(page, broker_id)
+    if not base_path:
+        base_path = await find_and_open_broker(page, broker_id)
     if not base_path:
         return f"❌ Broker '{broker_id}' not found. Nothing changed."
 
@@ -1270,14 +1271,15 @@ async def action_change_hours(broker_id: str, start: str, end: str,
 
 
 async def action_edit_country_add_days(broker_id: str, country: str, start: str, end: str,
-                                        no_traffic: bool, days_to_add: list) -> str:
+                                        no_traffic: bool, days_to_add: list, base_path: str = None) -> str:
     """
     Редактировать существующую запись страны: добавить галочки на нужные дни
     и выставить часы — не трогая already activeные дни.
     """
     page = await get_page()
 
-    base_path = await find_and_open_broker(page, broker_id)
+    if not base_path:
+        base_path = await find_and_open_broker(page, broker_id)
     if not base_path:
         return f"❌ Broker '{broker_id}' not found. Nothing changed."
 
@@ -1657,11 +1659,12 @@ async def action_add_country_hours_multi(broker_id: str, country: str,
 
 
 async def action_add_country_hours(broker_id: str, country: str, start: str, end: str,
-                                    no_traffic: bool, days_filter: list = None) -> str:
+                                    no_traffic: bool, days_filter: list = None, base_path: str = None) -> str:
     """Добавить часы работы для новой страны."""
     page = await get_page()
 
-    base_path = await find_and_open_broker(page, broker_id)
+    if not base_path:
+        base_path = await find_and_open_broker(page, broker_id)
     if not base_path:
         return f"❌ Broker '{broker_id}' not found. Nothing changed."
 
@@ -2392,11 +2395,12 @@ async def action_add_affiliate_revenue(affiliate_id: str, country: str, amount: 
         return "⚠️ Save button not found."
 
 
-async def action_add_revenue(broker_id: str, country: str, amount: str, affiliate_id: str = None) -> str:
+async def action_add_revenue(broker_id: str, country: str, amount: str, affiliate_id: str = None, base_path: str = None) -> str:
     """Добавить или обновить прайс (revenue) для страны брокера."""
     page = await get_page()
 
-    base_path = await find_and_open_broker(page, broker_id, country_hint=country)
+    if not base_path:
+        base_path = await find_and_open_broker(page, broker_id, country_hint=country)
     if not base_path:
         return f"❌ Broker '{broker_id}' not found. Nothing changed."
     rev_url = f"{CRM_URL.rstrip('/')}{base_path}/revenues"
@@ -2688,11 +2692,12 @@ async def _close_days_for_pencil(page, pencil, country_name: str, days_to_close:
         return f"⚠️ {country_name}: Save button not found."
 
 
-async def action_close_days(broker_id: str, country: str, days_to_close: list, country_hint: str = None) -> str:
+async def action_close_days(broker_id: str, country: str, days_to_close: list, country_hint: str = None, base_path: str = None) -> str:
     """Закрыть конкретные дни для страны (или всех стран) брокера."""
     page = await get_page()
 
-    base_path = await find_and_open_broker(page, broker_id, country_hint=country_hint or country)
+    if not base_path:
+        base_path = await find_and_open_broker(page, broker_id, country_hint=country_hint or country)
     if not base_path:
         return f"❌ Broker '{broker_id}' not found. Nothing changed."
 
@@ -2907,11 +2912,12 @@ async def action_toggle_broker(broker_id: str, activate: bool) -> str:
     return "\n".join(results)
 
 
-async def action_change_caps(broker_id: str, country: str, cap_value: int = 0, delta: int = None, affiliate_id: str = None, delete_first: bool = False) -> str:
+async def action_change_caps(broker_id: str, country: str, cap_value: int = 0, delta: int = None, affiliate_id: str = None, delete_first: bool = False, base_path: str = None) -> str:
     """Изменить или создать cap для страны брокера. delta — прибавить к текущему значению. affiliate_id — добавить параметр Affiliates."""
     page = await get_page()
 
-    base_path = await find_and_open_broker(page, broker_id)
+    if not base_path:
+        base_path = await find_and_open_broker(page, broker_id)
     if not base_path:
         return f"❌ Broker '{broker_id}' not found."
 
@@ -4261,7 +4267,8 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                     start=country_start,
                                     end=country_end,
                                     no_traffic=action.get("no_traffic", True),
-                                    days_to_add=[requested_day]
+                                    days_to_add=[requested_day],
+                                    base_path=broker_base
                                 )
                             else:
                                 if is_weekend_request:
@@ -4276,7 +4283,8 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                     start=country_start,
                                     end=country_end,
                                     no_traffic=action.get("no_traffic", True),
-                                    days_filter=new_days_filter
+                                    days_filter=new_days_filter,
+                                    base_path=broker_base
                                 )
                         elif skip_missing and existing_countries:
                             if not country_exists:
@@ -4290,7 +4298,8 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                 start=country_start,
                                 end=country_end,
                                 no_traffic=action.get("no_traffic", True),
-                                days_to_add=days_to_add
+                                days_to_add=days_to_add,
+                                base_path=broker_base
                             )
                         else:
                             sub_msg = await action_add_country_hours(
@@ -4299,7 +4308,8 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                 start=country_start,
                                 end=country_end,
                                 no_traffic=action.get("no_traffic", True),
-                                days_filter=days_filter
+                                days_filter=days_filter,
+                                base_path=broker_base
                             )
                         sub_results.append(sub_msg)
 
@@ -4324,13 +4334,36 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                     sub_results = []
                     # Определяем hint-страну для LATAM маршрутизации
                     first_country = next((cd.get("country") for cd in countries_days if cd.get("country", "all").lower() != "all"), None)
-                    for cd in countries_days:
-                        sub_msg = await action_close_days(
-                            broker_id=str(broker_id),
-                            country=cd.get("country", "all"),
-                            days_to_close=cd.get("days_to_close", []),
-                            country_hint=first_country
-                        )
+                    # Ищем брокера ОДИН раз
+                    page = await get_page()
+                    broker_base = await find_and_open_broker(page, str(broker_id), country_hint=first_country)
+                    if not broker_base:
+                        msg = f"❌ Broker '{broker_id}' not found."
+                    else:
+                        # Если все страны с одинаковыми днями — можно обработать все разом
+                        # через "all" mode если countries=all, или по одной
+                        all_same_days = len(set(tuple(cd.get("days_to_close", [])) for cd in countries_days)) == 1
+                        countries_list = [cd.get("country", "all") for cd in countries_days]
+
+                        if len(countries_days) == 1 and countries_list[0].lower() == "all":
+                            # Одна запись "all" — используем all mode
+                            sub_msg = await action_close_days(
+                                broker_id=str(broker_id),
+                                country="all",
+                                days_to_close=countries_days[0].get("days_to_close", []),
+                                base_path=broker_base
+                            )
+                            sub_results.append(sub_msg)
+                        else:
+                            for cd in countries_days:
+                                sub_msg = await action_close_days(
+                                    broker_id=str(broker_id),
+                                    country=cd.get("country", "all"),
+                                    days_to_close=cd.get("days_to_close", []),
+                                    base_path=broker_base
+                                )
+                                sub_results.append(sub_msg)
+                        msg = "\n".join(sub_results)
                         sub_results.append(sub_msg)
                     msg = "\n".join(sub_results)
             elif a == "add_revenue":
@@ -4351,12 +4384,17 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                         msg = "❌ Amount not specified."
                     else:
                         sub_results = []
+                        # Ищем брокера один раз
+                        page = await get_page()
+                        first_country = next((cr.get("country") for cr in country_revenues if cr.get("country", "all").lower() != "all"), None)
+                        rev_broker_base = await find_and_open_broker(page, str(broker_id), country_hint=first_country)
                         for cr in country_revenues:
                             sub_msg = await action_add_revenue(
                                 broker_id=str(broker_id),
                                 country=cr.get("country", "all"),
                                 amount=str(cr.get("amount", "")),
-                                affiliate_id=str(cr["affiliate_id"]) if cr.get("affiliate_id") else None
+                                affiliate_id=str(cr["affiliate_id"]) if cr.get("affiliate_id") else None,
+                                base_path=rev_broker_base
                             )
                             sub_results.append(sub_msg)
                         msg = "\n".join(sub_results)
@@ -4481,114 +4519,125 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                 # Комбинированная задача: сначала капа, потом часы
                 sub_results = []
 
-                # 1. Ставим капу
-                cc_list = action.get("country_caps", [])
-                for cc in cc_list:
-                    cap_val = cc.get("cap")
-                    aff_id_val = cc.get("affiliate_id")
-                    if isinstance(aff_id_val, list):
-                        aff_param = aff_id_val
-                    elif aff_id_val is not None:
-                        aff_param = str(aff_id_val)
-                    else:
-                        aff_param = None
-                    try:
-                        sub_msg = await action_change_caps(
-                            broker_id=str(broker_id),
-                            country=cc.get("country", ""),
-                            cap_value=int(cap_val) if cap_val is not None else 0,
-                            delta=None,
-                            affiliate_id=aff_param,
-                            delete_first=False,
-                        )
-                        if sub_msg.startswith("__"):
+                # Ищем брокера ОДИН раз
+                page = await get_page()
+                lt_broker_base = await find_and_open_broker(page, str(broker_id))
+                if not lt_broker_base:
+                    msg = f"❌ Broker '{broker_id}' not found."
+                else:
+
+                    # 1. Ставим капу
+                    cc_list = action.get("country_caps", [])
+                    for cc in cc_list:
+                        cap_val = cc.get("cap")
+                        aff_id_val = cc.get("affiliate_id")
+                        if isinstance(aff_id_val, list):
+                            aff_param = aff_id_val
+                        elif aff_id_val is not None:
+                            aff_param = str(aff_id_val)
+                        else:
+                            aff_param = None
+                        try:
                             sub_msg = await action_change_caps(
                                 broker_id=str(broker_id),
                                 country=cc.get("country", ""),
                                 cap_value=int(cap_val) if cap_val is not None else 0,
                                 delta=None,
-                                affiliate_id=str(aff_id_val) if aff_id_val is not None else None,
-                                delete_first=True,
+                                affiliate_id=aff_param,
+                                delete_first=False,
+                                base_path=lt_broker_base,
                             )
-                        sub_results.append(f"🎯 Cap: {sub_msg}")
-                    except Exception as cap_err:
-                        sub_results.append(f"❌ Cap error: {cap_err}")
+                            if sub_msg.startswith("__"):
+                                sub_msg = await action_change_caps(
+                                    broker_id=str(broker_id),
+                                    country=cc.get("country", ""),
+                                    cap_value=int(cap_val) if cap_val is not None else 0,
+                                    delta=None,
+                                    affiliate_id=str(aff_id_val) if aff_id_val is not None else None,
+                                    delete_first=True,
+                                    base_path=lt_broker_base,
+                                )
+                            sub_results.append(f"🎯 Cap: {sub_msg}")
+                        except Exception as cap_err:
+                            sub_results.append(f"❌ Cap error: {cap_err}")
 
-                # 2. Ставим часы
-                country_hours_list = action.get("country_hours", [])
-                if country_hours_list:
-                    days_filter = action.get("days_to_keep", ["Monday","Tuesday","Wednesday","Thursday","Friday"])
-                    requested_day = action.get("requested_day", "")
-                    weekends = {"saturday", "sunday"}
-                    weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
-                    req_day_lower = requested_day.lower() if requested_day else ""
-                    is_weekend_request = req_day_lower in weekends
-                    if not requested_day:
-                        is_weekend_request = False
+                    # 2. Ставим часы
+                    country_hours_list = action.get("country_hours", [])
+                    if country_hours_list:
+                        days_filter = action.get("days_to_keep", ["Monday","Tuesday","Wednesday","Thursday","Friday"])
+                        requested_day = action.get("requested_day", "")
+                        weekends = {"saturday", "sunday"}
+                        weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+                        req_day_lower = requested_day.lower() if requested_day else ""
+                        is_weekend_request = req_day_lower in weekends
+                        if not requested_day:
+                            is_weekend_request = False
 
-                    existing_countries = []
-                    try:
-                        page = await get_page()
-                        broker_base = await find_and_open_broker(page, str(broker_id))
-                        if broker_base:
-                            oh_url = f"{CRM_URL.rstrip('/')}{broker_base}/opening_hours"
+                        existing_countries = []
+                        try:
+                            page = await get_page()
+                            oh_url = f"{CRM_URL.rstrip('/')}{lt_broker_base}/opening_hours"
                             await page.goto(oh_url, wait_until="domcontentloaded", timeout=60000)
                             existing_countries = await _scrape_countries_from_page(page)
-                    except Exception as e:
-                        log.warning(f"Failed to get existing countries: {e}")
+                        except Exception as e:
+                            log.warning(f"Failed to get existing countries: {e}")
 
-                    for ch in country_hours_list:
-                        country_name = ch.get("country", "")
-                        country_start = ch.get("start", "09:00")
-                        country_end = ch.get("end") or ""
-                        
-                        country_exists = any(country_name.lower() in ec.lower() for ec in existing_countries)
+                        for ch in country_hours_list:
+                            country_name = ch.get("country", "")
+                            country_start = ch.get("start", "09:00")
+                            country_end = ch.get("end") or ""
+                            
+                            country_exists = any(country_name.lower() in ec.lower() for ec in existing_countries)
 
-                        try:
-                            if requested_day:
-                                if country_exists:
-                                    sub_msg = await action_edit_country_add_days(
-                                        broker_id=str(broker_id),
-                                        country=country_name,
-                                        start=country_start,
-                                        end=country_end,
-                                        no_traffic=action.get("no_traffic", True),
-                                        days_to_add=[requested_day]
-                                    )
+                            try:
+                                if requested_day:
+                                    if country_exists:
+                                        sub_msg = await action_edit_country_add_days(
+                                            broker_id=str(broker_id),
+                                            country=country_name,
+                                            start=country_start,
+                                            end=country_end,
+                                            no_traffic=action.get("no_traffic", True),
+                                            days_to_add=[requested_day],
+                                            base_path=lt_broker_base
+                                        )
+                                    else:
+                                        new_days_filter = [requested_day] if is_weekend_request else weekdays
+                                        sub_msg = await action_add_country_hours(
+                                            broker_id=str(broker_id),
+                                            country=country_name,
+                                            start=country_start,
+                                            end=country_end,
+                                            no_traffic=action.get("no_traffic", True),
+                                            days_filter=new_days_filter,
+                                            base_path=lt_broker_base
+                                        )
                                 else:
-                                    new_days_filter = [requested_day] if is_weekend_request else weekdays
-                                    sub_msg = await action_add_country_hours(
-                                        broker_id=str(broker_id),
-                                        country=country_name,
-                                        start=country_start,
-                                        end=country_end,
-                                        no_traffic=action.get("no_traffic", True),
-                                        days_filter=new_days_filter
-                                    )
-                            else:
-                                if country_exists:
-                                    sub_msg = await action_change_hours(
-                                        broker_id=str(broker_id),
-                                        start=country_start,
-                                        end=country_end,
-                                        countries_filter=[country_name],
-                                        no_traffic=action.get("no_traffic", True),
-                                        days_filter=days_filter
-                                    )
-                                else:
-                                    sub_msg = await action_add_country_hours(
-                                        broker_id=str(broker_id),
-                                        country=country_name,
-                                        start=country_start,
-                                        end=country_end,
-                                        no_traffic=action.get("no_traffic", True),
-                                        days_filter=days_filter
-                                    )
-                            sub_results.append(f"🕐 Hours: {sub_msg}")
-                        except Exception as hours_err:
-                            sub_results.append(f"❌ Hours error: {hours_err}")
+                                    if country_exists:
+                                        sub_msg = await action_change_hours(
+                                            broker_id=str(broker_id),
+                                            start=country_start,
+                                            end=country_end,
+                                            countries_filter=[country_name],
+                                            no_traffic=action.get("no_traffic", True),
+                                            days_filter=days_filter,
+                                            base_path=lt_broker_base
+                                        )
+                                    else:
+                                        sub_msg = await action_add_country_hours(
+                                            broker_id=str(broker_id),
+                                            country=country_name,
+                                            start=country_start,
+                                            end=country_end,
+                                            no_traffic=action.get("no_traffic", True),
+                                            days_filter=days_filter,
+                                            base_path=lt_broker_base
+                                        )
+                                sub_results.append(f"🕐 Hours: {sub_msg}")
+                            except Exception as hours_err:
+                                sub_results.append(f"❌ Hours error: {hours_err}")
 
-                msg = "\n".join(sub_results)
+                    msg = "\n".join(sub_results)
 
             elif a == "bulk_schedule":
                 # Оптимизированное расписание: открываем страницу ОДИН раз,
