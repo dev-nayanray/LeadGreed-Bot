@@ -202,6 +202,9 @@ SYSTEM_PROMPT = """
   ]
   Если одна страна — тоже countries_days, список из одного элемента.
   "days_to_close" на верхнем уровне оставляй пустым.
+- ВАЖНО: close_days ВСЕГДА требует конкретную страну. НИКОГДА не ставь "country": "all".
+  "Legion DE pause" → country: "Germany". "Capitan FR pause" → country: "France".
+  Если страна не указана в сообщении — ставь action: "unknown", НЕ close_days с "all".
 - Для close_days: days_to_close = список дней которые нужно закрыть
 - ВАЖНО: Правило различения брокера и аффилиата при запросе прайса:
   • Просто число + страны + "прайс/price" → ЭТО АФФИЛИАТ (get_affiliate_revenue)
@@ -1121,7 +1124,7 @@ async def action_change_hours(broker_id: str, start: str, end: str,
                 break
 
         if not target_pencil:
-            results.append(f"⚠️ {country_name}: карандаш not found после обновления DOM")
+            results.append(f"⚠️ {country_name}: pencil not found after DOM update")
             continue
 
         await target_pencil.click()
@@ -3447,7 +3450,7 @@ def build_confirm_text(action: dict) -> str:
             sched_str = "\n".join(sched_lines)
             return (
                 f"📋 *Confirmation required*\n\n"
-                f"Action: добавить hours for стран\n"
+                f"Action: set hours\n"
                 f"Brokers: `{brokers}`\n"
                 f"Countries: {countries_str}\n"
                 f"Schedule:\n{sched_str}\n"
@@ -3459,7 +3462,7 @@ def build_confirm_text(action: dict) -> str:
             lines = "\n".join(f"  • {ch['country']}: {ch['start']}–{ch['end']}" for ch in ch_list)
             return (
                 f"📋 *Confirmation required*\n\n"
-                f"Action: добавить hours for стран\n"
+                f"Action: set hours\n"
                 f"Brokers: `{brokers}`\n"
                 f"Countries & hours:\n{lines}\n"
                 f"Days: {days}\n"
@@ -3504,7 +3507,7 @@ def build_confirm_text(action: dict) -> str:
             lines = f"  • {country}: ${amount}"
         return (
             f"📋 *Confirmation required*\n\n"
-            f"Action: добавить прайс\n"
+            f"Action: set price\n"
             f"Brokers: `{brokers}`\n"
             f"Countries & amounts:\n{lines}\n\n"
             f"Confirm?"
@@ -3866,7 +3869,7 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                         country_hours_list = [{"country": country, "start": h.get("start", "09:00"), "end": h.get("end", "17:00")}]
 
                 if not country_hours_list:
-                    msg = "❌ Укажи страну и hours for добавления."
+                    msg = "❌ Please specify country and hours."
                 else:
                     schedule_groups = action.get("schedule_groups", [])
                     days_filter    = action.get("days_to_keep", action.get("days", ["Monday","Tuesday","Wednesday","Thursday","Friday"]))
@@ -3973,11 +3976,14 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                     countries = action.get("countries", [])
                     country = countries[0] if countries and "all" not in countries else "all"
                     days_to_close = action.get("days_to_close", [])
-                    if days_to_close:
+                    if days_to_close and country != "all":
                         countries_days = [{"country": country, "days_to_close": days_to_close}]
 
+                # Безопасность: не закрывать "all" страны
+                countries_days = [cd for cd in countries_days if cd.get("country", "all").lower() != "all"]
+
                 if not countries_days:
-                    msg = "❌ Please specify countries and days."
+                    msg = "❌ Please specify specific country to close (not 'all')."
                 else:
                     sub_results = []
                     for cd in countries_days:
@@ -4000,16 +4006,21 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                 if not country_revenues:
                     msg = "❌ Please specify country and amount."
                 else:
-                    sub_results = []
-                    for cr in country_revenues:
-                        sub_msg = await action_add_revenue(
-                            broker_id=str(broker_id),
-                            country=cr.get("country", "all"),
-                            amount=str(cr.get("amount", "")),
-                            affiliate_id=str(cr["affiliate_id"]) if cr.get("affiliate_id") else None
-                        )
-                        sub_results.append(sub_msg)
-                    msg = "\n".join(sub_results)
+                    # Фильтруем записи без суммы
+                    country_revenues = [cr for cr in country_revenues if cr.get("amount") is not None and str(cr.get("amount", "")).strip()]
+                    if not country_revenues:
+                        msg = "❌ Amount not specified."
+                    else:
+                        sub_results = []
+                        for cr in country_revenues:
+                            sub_msg = await action_add_revenue(
+                                broker_id=str(broker_id),
+                                country=cr.get("country", "all"),
+                                amount=str(cr.get("amount", "")),
+                                affiliate_id=str(cr["affiliate_id"]) if cr.get("affiliate_id") else None
+                            )
+                            sub_results.append(sub_msg)
+                        msg = "\n".join(sub_results)
             elif a == "add_affiliate_revenue":
                 aff_id = str(action.get("affiliate_id") or broker_id)
                 cr_list = action.get("country_revenues", [])
@@ -4390,7 +4401,7 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                     msg = "\n".join(sub_results) if sub_results else "⚠️ Nothing to update."
 
             else:
-                msg = f"⚠️ Действие '{a}' is not supported yet."
+                msg = f"⚠️ Action '{a}' is not supported yet."
 
             if a in ("add_affiliate_revenue",):
                 label = "Aff"
@@ -4449,22 +4460,36 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # В личке — обрабатываем всё
     is_group = update.effective_chat.type in ("group", "supergroup")
     if is_group:
-        # Объединяем текст + контекст для проверки
-        combined_text = f"{text}\n{reply_context}" if reply_context else text
-        text_upper = combined_text.upper()
-        # Паттерн 1: ISO код страны (2 заглавные буквы) + число 3-4 цифры (прайс)
-        has_price_pattern = bool(re.search(r'\b[A-Z]{2}\b', text_upper) and re.search(r'\b\d{3,4}\b', combined_text))
-        # Паттерн 2: CRM-команды (cap, wh, price, hours)
-        text_lower = combined_text.lower()
+        text_lower_orig = text.lower()
+        text_upper_orig = text.upper()
+
+        # Сначала проверяем САМО сообщение (без reply-контекста)
+        # Если новое сообщение не содержит CRM-паттернов — игнорируем
+        # (даже если reply содержит "capitan" или другие ключевые слова)
         crm_commands = ("cap", "price", "wh ", "hours", "прайс", "часы", "кап", "лимит",
                         "schedule", "geo:", "desk", "off", "close", "закрыть", "выходн",
                         "pause", "back in", "is back")
-        has_command = any(kw in text_lower for kw in crm_commands)
-        # Паттерн 3: время (HH:MM-HH:MM или "at HH:MM") — расписание
-        has_time = bool(re.search(r'\d{1,2}:\d{2}\s*[-–]\s*\d{1,2}:\d{2}', combined_text) or
-                        re.search(r'\bat\s+\d{1,2}:\d{2}', combined_text.lower()))
-        if not (has_price_pattern or has_command or has_time):
+        msg_has_price = bool(re.search(r'\b[A-Z]{2}\b', text_upper_orig) and re.search(r'\b\d{3,4}\b', text))
+        msg_has_command = any(kw in text_lower_orig for kw in crm_commands)
+        msg_has_time = bool(re.search(r'\d{1,2}:\d{2}\s*[-–]\s*\d{1,2}:\d{2}', text) or
+                            re.search(r'\bat\s+\d{1,2}:\d{2}', text_lower_orig))
+        msg_has_broker_name = bool(re.search(r'\b(legion|nexus|capitan|fintrix|capex|swin|helios|axia|fugazi|ave|theta|imperius|emp|cmt|glb|mn|marsi|farah|roibees|clickbait|avelux|mediaNow)\b', text_lower_orig, re.IGNORECASE))
+
+        # Имя брокера одно по себе — не команда. Нужно ещё что-то (ISO код, число, время, ключевое слово)
+        msg_has_action_context = bool(
+            re.search(r'\b[A-Z]{2}\b', text_upper_orig) or  # ISO код
+            re.search(r'\b\d{3,4}\b', text) or              # число (прайс/капа)
+            re.search(r'\d{1,2}:\d{2}', text) or            # время
+            any(kw in text_lower_orig for kw in crm_commands)  # ключевое слово
+        )
+
+        if not (msg_has_price or msg_has_command or msg_has_time or (msg_has_broker_name and msg_has_action_context)):
             return
+
+        # Теперь объединяем для полной проверки (reply-контекст даёт дополнительную информацию)
+        combined_text = f"{text}\n{reply_context}" if reply_context else text
+        text_lower = combined_text.lower()
+        text_upper = combined_text.upper()
         # CPL — игнорируем полностью
         if "cpl" in text.lower():
             return
@@ -4493,6 +4518,9 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_group:
         await update.message.reply_text("🤔 Analyzing command...", disable_notification=True)
 
+    # Логируем входящий текст для дебага
+    log.info(f"Incoming text (chat={chat_id}, user={user_id}): {text[:200]}")
+
     action = await asyncio.get_event_loop().run_in_executor(None, parse_command, text)
 
     # Для add_affiliate_revenue broker_ids может быть пустым — используем affiliate_id
@@ -4515,7 +4543,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Прайсы — выполняем без подтверждения, через очередь, без промежуточных сообщений
-    if action.get("action") in ("add_revenue", "add_affiliate_revenue", "set_prices", "bulk_schedule", "multi_broker_task", "close_days"):
+    if action.get("action") in ("add_revenue", "add_affiliate_revenue", "set_prices", "bulk_schedule", "multi_broker_task"):
         queue_size = _task_queue.qsize()
         if queue_size > 0 and not is_group:
             await update.message.reply_text(f"⏳ Queued, position #{queue_size + 1}…", disable_notification=True)
