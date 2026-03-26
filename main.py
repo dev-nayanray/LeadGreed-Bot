@@ -202,9 +202,8 @@ SYSTEM_PROMPT = """
   ]
   Если одна страна — тоже countries_days, список из одного элемента.
   "days_to_close" на верхнем уровне оставляй пустым.
-- ВАЖНО: close_days ВСЕГДА требует конкретную страну. НИКОГДА не ставь "country": "all".
-  "Legion DE pause" → country: "Germany". "Capitan FR pause" → country: "France".
-  Если страна не указана в сообщении — ставь action: "unknown", НЕ close_days с "all".
+- ВАЖНО: close_days требует конкретную страну. Если страна не указана — ставь "country": "all" (закрыть все страны).
+  "Legion DE pause" → country: "Germany". "Universo Friday off" → country: "all" (все страны).
 - Для close_days: days_to_close = список дней которые нужно закрыть
 - ВАЖНО: Правило различения брокера и аффилиата при запросе прайса:
   • Просто число + страны + "прайс/price" → ЭТО АФФИЛИАТ (get_affiliate_revenue)
@@ -4008,11 +4007,11 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                     if days_to_close and country != "all":
                         countries_days = [{"country": country, "days_to_close": days_to_close}]
 
-                # Безопасность: не закрывать "all" страны
-                countries_days = [cd for cd in countries_days if cd.get("country", "all").lower() != "all"]
+                # Если country=all — требуем подтверждение (не блокируем)
+                # Подтверждение обеспечивается тем, что close_days НЕ в списке no-confirmation
 
                 if not countries_days:
-                    msg = "⚠️ Which country to close? Please specify, e.g. 'Universo DE Friday off'"
+                    msg = "❌ Please specify countries and days."
                 else:
                     sub_results = []
                     for cd in countries_days:
