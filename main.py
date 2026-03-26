@@ -3709,6 +3709,7 @@ async def _execute_get_task(bot, chat_id: int, action: dict, text: str):
 
 async def _execute_confirmed_task(bot, chat_id: int, action: dict):
     """Выполнить подтверждённое действие (вызывается из очереди)."""
+    global _last_broker_full_name
     user_cmd = action.get("_user_command", "")
     log_ids = []
 
@@ -3871,6 +3872,8 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
             return
 
         for broker_id in action.get("broker_ids", []):
+            _last_broker_full_name = str(broker_id)  # сбрасываем на текущий ID
+
             lid = alog.log_action(a, str(broker_id), json.dumps(action, ensure_ascii=False)[:300],
                                   "pending", user_command=user_cmd)
             log_ids.append(lid)
@@ -4009,7 +4012,7 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                 countries_days = [cd for cd in countries_days if cd.get("country", "all").lower() != "all"]
 
                 if not countries_days:
-                    msg = "❌ Please specify specific country to close (not 'all')."
+                    msg = "⚠️ Which country to close? Please specify, e.g. 'Universo DE Friday off'"
                 else:
                     sub_results = []
                     for cd in countries_days:
@@ -4501,7 +4504,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg_has_command = any(kw in text_lower_orig for kw in crm_commands)
         msg_has_time = bool(re.search(r'\d{1,2}:\d{2}\s*[-–]\s*\d{1,2}:\d{2}', text) or
                             re.search(r'\bat\s+\d{1,2}:\d{2}', text_lower_orig))
-        msg_has_broker_name = bool(re.search(r'\b(legion|nexus|capitan|fintrix|capex|swin|helios|axia|fugazi|ave|theta|imperius|emp|cmt|glb|mn|marsi|farah|roibees|clickbait|avelux|mediaNow)\b', text_lower_orig, re.IGNORECASE))
+        msg_has_broker_name = bool(re.search(r'\b(legion|nexus|capitan|fintrix|capex|swin|helios|axia|fugazi|ave|theta|imperius|emp|cmt|glb|mn|marsi|farah|roibees|clickbait|avelux|mediaNow|universo|fusion)\b', text_lower_orig, re.IGNORECASE))
 
         # Имя брокера одно по себе — не команда. Нужно ещё что-то (ISO код, число, время, ключевое слово)
         msg_has_action_context = bool(
