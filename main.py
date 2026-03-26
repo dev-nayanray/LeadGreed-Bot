@@ -1791,54 +1791,83 @@ async def action_add_country_hours(broker_id: str, country: str, start: str, end
 
     if is_overnight:
         log.info(f"Overnight hours detected: {start_val}-{end_val} → split into 00:00-{end_val} + {start_val}-24:00")
+
+        # Находим Monday строку
+        monday_row = await page.evaluate("""() => {
+            const days = document.querySelectorAll('.modal .day, .modal [class*="day_inner"], .modal [class*="day_wrapper"]');
+            for (const d of days) {
+                if (d.textContent.toLowerCase().includes('monday')) return true;
+            }
+            return false;
+        }""")
+        log.info(f"Monday row found: {monday_row}")
+
         # Ставим первый слот Monday: 00:00 - end
         if len(time_inputs) >= 2:
             await set_timepicker(time_inputs[0], "00:00")
             await set_timepicker(time_inputs[1], end_val)
+        await page.wait_for_timeout(300)
 
-        # Нажимаем "+" (add-step) для Monday чтобы добавить второй слот
-        add_step_btn = await page.evaluate("""() => {
-            // Ищем кнопку "+" рядом с Monday
-            const days = document.querySelectorAll('.day, [class*="day_inner"]');
-            for (const day of days) {
-                const text = day.textContent || '';
-                if (text.toLowerCase().includes('monday') || text.toLowerCase().includes('copy to all')) {
-                    const plusBtn = day.querySelector('.add-step svg, .add-step, [title*="Add a new time step"]');
-                    if (plusBtn) { plusBtn.click(); return true; }
-                    // Fallback: ищем SVG с plus-circle
-                    const svgs = day.querySelectorAll('svg.fa-plus-circle, svg[data-icon="plus-circle"]');
-                    for (const svg of svgs) { svg.click(); return true; }
-                }
-            }
-            // Fallback: первый plus-circle в модалке
-            const svg = document.querySelector('.modal svg.fa-plus-circle, .modal svg[data-icon="plus-circle"]');
-            if (svg) { svg.click(); return true; }
+        # Нажимаем "+" для Monday — ищем первый plus-circle в модалке
+        plus_clicked = await page.evaluate("""() => {
+            // Ищем все span/div с title "Add a new time step"
+            const addSteps = document.querySelectorAll('.modal .add-step, .modal [title*="Add a new time step"]');
+            if (addSteps.length > 0) { addSteps[0].click(); return 'add-step-' + addSteps.length; }
+            // Fallback: первый plus-circle SVG
+            const svgs = document.querySelectorAll('.modal svg.fa-plus-circle, .modal svg[data-icon="plus-circle"]');
+            if (svgs.length > 0) { svgs[0].click(); return 'svg-' + svgs.length; }
+            // Fallback 2: span содержащий SVG plus
+            const spans = document.querySelectorAll('.modal .add-step');
+            if (spans.length > 0) { spans[0].click(); return 'span-' + spans.length; }
             return false;
         }""")
-        log.info(f"Clicked add-step (+): {add_step_btn}")
-        await page.wait_for_timeout(800)
+        log.info(f"Clicked add-step (+): {plus_clicked}")
+        await page.wait_for_timeout(1500)  # больше времени для анимации
 
-        # Заново собираем timepicker'ы — теперь их больше
+        # Заново собираем ВСЕ timepicker'ы в модалке
         modal = await page.query_selector(".modal-body, [role='dialog']")
+        time_inputs2 = []
         if modal:
             all_inputs = await modal.query_selector_all("input")
-            time_inputs2 = []
             for inp in all_inputs:
                 inp_cls = await inp.get_attribute("class") or ""
                 inp_type = await inp.get_attribute("type") or ""
                 if "timepicker" in inp_cls and inp_type == "text":
                     time_inputs2.append(inp)
-            log.info(f"Timepicker inputs after add-step: {len(time_inputs2)}")
+        log.info(f"Timepicker inputs after add-step: {len(time_inputs2)}")
 
-            # Ищем новые инпуты (второй слот Monday) — они должны быть на позициях 2,3
-            # Первый слот Monday: [0]=00:00, [1]=01:00
-            # Второй слот Monday: [2]=start, [3]=24:00
-            if len(time_inputs2) >= 4:
-                await set_timepicker(time_inputs2[2], start_val)
-                await set_timepicker(time_inputs2[3], "24:00")
-                log.info(f"Second slot set: {start_val}-24:00")
+        # Если новые инпуты появились (16 вместо 14) — второй слот на позициях 2,3
+        if len(time_inputs2) > len(time_inputs):
+            await set_timepicker(time_inputs2[2], start_val)
+            await set_timepicker(time_inputs2[3], "24:00")
+            log.info(f"Second slot set: {start_val}-24:00")
+        else:
+            # "+" не создал новых инпутов — пробуем через JS напрямую
+            log.info("No new inputs appeared, trying JS approach")
+            # Ищем инпуты внутри Monday day_wrapper
+            set_ok = await page.evaluate(f"""() => {{
+                const days = document.querySelectorAll('.modal .day, .modal [class*="day_wrapper"]');
+                for (const d of days) {{
+                    if (!d.textContent.toLowerCase().includes('monday')) continue;
+                    const inputs = d.querySelectorAll('input.timepicker-input, input[class*="timepicker"]');
+                    // Если 4+ инпутов — значит второй слот есть
+                    if (inputs.length >= 4) {{
+                        inputs[2].value = '{start_val}';
+                        inputs[2].dispatchEvent(new Event('input', {{bubbles:true}}));
+                        inputs[2].dispatchEvent(new Event('change', {{bubbles:true}}));
+                        inputs[3].value = '24:00';
+                        inputs[3].dispatchEvent(new Event('input', {{bubbles:true}}));
+                        inputs[3].dispatchEvent(new Event('change', {{bubbles:true}}));
+                        return 'set-' + inputs.length;
+                    }}
+                    return 'only-' + inputs.length;
+                }}
+                return 'no-monday';
+            }}""")
+            log.info(f"JS approach result: {set_ok}")
 
         # Нажимаем "copy to all"
+        await page.wait_for_timeout(300)
         copied = await page.evaluate("""() => {
             const spans = document.querySelectorAll('.modal span.font-italic, .modal strong');
             for (const span of spans) {
