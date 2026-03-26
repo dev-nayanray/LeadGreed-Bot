@@ -1136,7 +1136,8 @@ async def action_change_hours(broker_id: str, start: str, end: str,
             for mc in missing_countries:
                 sub_msg = await action_add_country_hours(
                     broker_id=broker_id, country=mc, start=start, end=end,
-                    no_traffic=no_traffic, days_filter=days_filter
+                    no_traffic=no_traffic, days_filter=days_filter,
+                    base_path=base_path
                 )
                 results.append(sub_msg)
             return "\n".join(results)
@@ -1147,7 +1148,8 @@ async def action_change_hours(broker_id: str, start: str, end: str,
             for mc in missing_countries:
                 sub_msg = await action_add_country_hours(
                     broker_id=broker_id, country=mc, start=start, end=end,
-                    no_traffic=no_traffic, days_filter=days_filter
+                    no_traffic=no_traffic, days_filter=days_filter,
+                    base_path=base_path
                 )
                 add_results.append(sub_msg)
 
@@ -4094,6 +4096,10 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                         # lead_task — капа + часы
                         sub_parts = []
 
+                        # Ищем брокера ОДИН раз для этого таска
+                        page = await get_page()
+                        mb_broker_base = await find_and_open_broker(page, t_broker, country_hint=t_country)
+
                         # Капа
                         if task.get("cap") is not None:
                             cap_msg = await action_change_caps(
@@ -4103,6 +4109,7 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                 delta=None,
                                 affiliate_id=None,
                                 delete_first=False,
+                                base_path=mb_broker_base,
                             )
                             if cap_msg.startswith("__"):
                                 cap_msg = await action_change_caps(
@@ -4112,6 +4119,7 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                     delta=None,
                                     affiliate_id=None,
                                     delete_first=True,
+                                    base_path=mb_broker_base,
                                 )
                             sub_parts.append(f"🎯 Cap: {cap_msg}")
 
@@ -4119,11 +4127,8 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                         if task.get("start"):
                             t_start = task["start"]
                             t_end = task.get("end") or ""
-                            # Проверяем есть ли страна у брокера
-                            page = await get_page()
-                            broker_base = await find_and_open_broker(page, t_broker)
-                            if broker_base:
-                                oh_url = f"{CRM_URL.rstrip('/')}{broker_base}/opening_hours"
+                            if mb_broker_base:
+                                oh_url = f"{CRM_URL.rstrip('/')}{mb_broker_base}/opening_hours"
                                 await page.goto(oh_url, wait_until="domcontentloaded", timeout=60000)
                                 existing = await _scrape_countries_from_page(page)
                                 country_exists = any(t_country.lower() in ec.lower() for ec in existing)
@@ -4139,7 +4144,8 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                             start=t_start,
                                             end=t_end,
                                             no_traffic=task.get("no_traffic", True),
-                                            days_to_add=[t_day]
+                                            days_to_add=[t_day],
+                                            base_path=mb_broker_base
                                         )
                                     else:
                                         new_days = [t_day] if is_weekend else ["Monday","Tuesday","Wednesday","Thursday","Friday"]
@@ -4149,7 +4155,8 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                             start=t_start,
                                             end=t_end,
                                             no_traffic=task.get("no_traffic", True),
-                                            days_filter=new_days
+                                            days_filter=new_days,
+                                            base_path=mb_broker_base
                                         )
                                 else:
                                     hours_msg = await action_change_hours(
@@ -4158,7 +4165,8 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                         end=t_end,
                                         countries_filter=[t_country],
                                         no_traffic=task.get("no_traffic", True),
-                                        days_filter=["Monday","Tuesday","Wednesday","Thursday","Friday"]
+                                        days_filter=["Monday","Tuesday","Wednesday","Thursday","Friday"],
+                                        base_path=mb_broker_base
                                     )
                                 sub_parts.append(f"🕐 Hours: {hours_msg}")
                             else:
@@ -4433,6 +4441,9 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                     msg = "❌ Please specify country and cap value."
                 else:
                     sub_results = []
+                    # Ищем брокера один раз
+                    page = await get_page()
+                    caps_broker_base = await find_and_open_broker(page, str(broker_id))
                     for cc in cc_list:
                         delta_val = cc.get("delta")
                         cap_val   = cc.get("cap")
@@ -4454,6 +4465,7 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                             delta=int(delta_val) if delta_val is not None else None,
                             affiliate_id=aff_param,
                             delete_first=delete_first,
+                            base_path=caps_broker_base,
                         )
                         # Есть капа без параметров — спрашиваем удалить или оставить
                         if sub_msg.startswith("__HAS_NO_PARAM_CAP__"):
@@ -4878,6 +4890,15 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if not (msg_has_price or msg_has_command or msg_has_time or (msg_has_broker_name and msg_has_action_context)):
             return
+
+        # Блокируем обсуждения/жалобы — если есть разговорные слова и НЕТ имени брокера + команды
+        conversational = ("rejection", "rejections", "many reject", "why ", "how come",
+                          "imagine", "not sure", "what happened", "what's going on",
+                          "paying", "invoice", "i think", "probably",
+                          "не умеет", "почему", "сломал", "не работает", "ебан")
+        if any(kw in text_lower_orig for kw in conversational):
+            if not (msg_has_broker_name and (msg_has_command or msg_has_time)):
+                return
 
         # Теперь объединяем для полной проверки (reply-контекст даёт дополнительную информацию)
         combined_text = f"{text}\n{reply_context}" if reply_context else text
