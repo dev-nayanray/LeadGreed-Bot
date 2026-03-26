@@ -359,6 +359,10 @@ SYSTEM_PROMPT = """
 - cpa / crg / тип сделки — игнорируй
 - Проценты (10%, 15%, 5% и т.д.) — ПОЛНОСТЬЮ ИГНОРИРУЙ, это комиссии, не относятся к прайсу
 - "deduct", "full deduct", "- N% deduct" — ПОЛНОСТЬЮ ИГНОРИРУЙ, это условия выплат
+- ВАЖНО: "100%", "50%", "N%" БЕЗ числа-прайса перед ним — это НЕ прайс, это процент распределения. Если единственное число в сообщении — с процентом, НЕ создавай add_revenue.
+  "Ave cpa AT pls add 21/117/28/13 for them 100%" → action: "unknown" (это запрос на добавление аффилиатов, не CRM-команда)
+  "pls add N/N/N for them" — это инструкция для других людей, ИГНОРИРУЙ
+- Числа через / (21/117/28/13) — это ID аффилиатов, НЕ прайсы
 - "test", "test tomorrow", "test today" — ПОЛНОСТЬЮ ИГНОРИРУЙ, это пометки менеджера
 - "tomorrow", "today" в контексте прайсов — ИГНОРИРУЙ (это когда прайс начнёт действовать, не наше дело)
 - Используй поле "country_revenues" — список объектов {country, amount}
@@ -4469,7 +4473,9 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         crm_commands = ("cap", "price", "wh ", "hours", "прайс", "часы", "кап", "лимит",
                         "schedule", "geo:", "desk", "off", "close", "закрыть", "выходн",
                         "pause", "back in", "is back")
-        msg_has_price = bool(re.search(r'\b[A-Z]{2}\b', text_upper_orig) and re.search(r'\b\d{3,4}\b', text))
+        # Числа с % (100%) или через / (21/117/28) — не прайсы
+        text_no_slashed = re.sub(r'\d+(/\d+)+', '', text)  # убираем "21/117/28/13"
+        msg_has_price = bool(re.search(r'\b[A-Z]{2}\b', text_upper_orig) and re.search(r'\b\d{3,4}\b(?!%)', text_no_slashed))
         msg_has_command = any(kw in text_lower_orig for kw in crm_commands)
         msg_has_time = bool(re.search(r'\d{1,2}:\d{2}\s*[-–]\s*\d{1,2}:\d{2}', text) or
                             re.search(r'\bat\s+\d{1,2}:\d{2}', text_lower_orig))
@@ -4478,7 +4484,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Имя брокера одно по себе — не команда. Нужно ещё что-то (ISO код, число, время, ключевое слово)
         msg_has_action_context = bool(
             re.search(r'\b[A-Z]{2}\b', text_upper_orig) or  # ISO код
-            re.search(r'\b\d{3,4}\b', text) or              # число (прайс/капа)
+            re.search(r'\b\d{3,4}\b(?!%)', text_no_slashed) or  # число (прайс/капа)
             re.search(r'\d{1,2}:\d{2}', text) or            # время
             any(kw in text_lower_orig for kw in crm_commands)  # ключевое слово
         )
