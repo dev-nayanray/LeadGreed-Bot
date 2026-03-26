@@ -4839,8 +4839,11 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # "started" без времени — уведомление о лиде ("Ave DE started"), не команда
         if "started" in text_lower and not re.search(r'\d{1,2}:\d{2}', text):
             return
-        # "rotation" — распределение лидов, не CRM-команда
-        if "rotation" in text_lower_orig:
+        # "rotation" как единственная тема — не CRM-команда. Но если есть cap/hours/price — пропускаем
+        if "rotation" in text_lower_orig and not (msg_has_price or msg_has_command or msg_has_time):
+            return
+        # "balance" — обсуждение оплаты, не команда
+        if "balance" in text_lower_orig:
             return
         # Вопросы типа "28 DE closed?" с числовым ID — игнорируем (это про аффа)
         # Но "Legion DE closed?" — обрабатываем (это запрос часов брокера)
