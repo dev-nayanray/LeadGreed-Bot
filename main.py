@@ -404,6 +404,7 @@ SYSTEM_PROMPT = """
   • Первое слово/фраза до числа — имя брокера → broker_ids
   • "N cap" — лимит → country_caps: [{country, cap: N}]
   • HH:MM-HH:MM или HH:MM–HH:MM — часы работы → hours start/end
+  • HH.MM-HH.MM (с точками) — тоже часы работы. Конвертируй в HH:MM формат: 14.00 → 14:00, 22.30 → 22:30, 17.00 → 17:00
   • "00:00" в конце времени означает полночь — оставляй как "00:00"
   • gmt+N / UTC+N — часовой пояс, ИГНОРИРУЙ (CRM сам управляет таймзоной)
 - Если в сообщении есть И часы, И капа — используй action: "lead_task"
@@ -4682,14 +4683,15 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg_has_price = bool(re.search(r'\b[A-Z]{2}\b', text_upper_orig) and re.search(r'\b\d{3,4}\b(?!%)', text_no_slashed))
         msg_has_command = any(kw in text_lower_orig for kw in crm_commands)
         msg_has_time = bool(re.search(r'\d{1,2}:\d{2}\s*[-–]\s*\d{1,2}:\d{2}', text) or
+                            re.search(r'\d{1,2}\.\d{2}\s*[-–]\s*\d{1,2}\.\d{2}', text) or
                             re.search(r'\bat\s+\d{1,2}:\d{2}', text_lower_orig))
-        msg_has_broker_name = bool(re.search(r'\b(legion|nexus|capitan|fintrix|capex|swin|helios|axia|fugazi|ave|theta|imperius|emp|cmt|glb|mn|marsi|farah|roibees|clickbait|avelux|mediaNow|universo|fusion)\b', text_lower_orig, re.IGNORECASE))
+        msg_has_broker_name = bool(re.search(r'\b(legion|nexus|capitan|fintrix|capex|swin|helios|axia|fugazi|ave|theta|imperius|emp|cmt|glb|mn|marsi|farah|roibees|clickbait|avelux|mediaNow|universo|fusion|ventury)\b', text_lower_orig, re.IGNORECASE))
 
         # Имя брокера одно по себе — не команда. Нужно ещё что-то (ISO код, число, время, ключевое слово)
         msg_has_action_context = bool(
             re.search(r'\b[A-Z]{2}\b', text_upper_orig) or  # ISO код
             re.search(r'\b\d{3,4}\b(?!%)', text_no_slashed) or  # число (прайс/капа)
-            re.search(r'\d{1,2}:\d{2}', text) or            # время
+            re.search(r'\d{1,2}[:.]\d{2}', text) or            # время (: или .)
             any(kw in text_lower_orig for kw in crm_commands)  # ключевое слово
         )
 
