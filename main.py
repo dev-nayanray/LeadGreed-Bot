@@ -2683,11 +2683,11 @@ async def _close_days_for_pencil(page, pencil, country_name: str, days_to_close:
         return f"⚠️ {country_name}: Save button not found."
 
 
-async def action_close_days(broker_id: str, country: str, days_to_close: list) -> str:
+async def action_close_days(broker_id: str, country: str, days_to_close: list, country_hint: str = None) -> str:
     """Закрыть конкретные дни для страны (или всех стран) брокера."""
     page = await get_page()
 
-    base_path = await find_and_open_broker(page, broker_id)
+    base_path = await find_and_open_broker(page, broker_id, country_hint=country_hint or country)
     if not base_path:
         return f"❌ Broker '{broker_id}' not found. Nothing changed."
 
@@ -4072,7 +4072,8 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                         close_msg = await action_close_days(
                             broker_id=t_broker,
                             country=t_country,
-                            days_to_close=[t_day]
+                            days_to_close=[t_day],
+                            country_hint=t_country
                         )
                         display_name = _last_broker_full_name if _last_broker_full_name != t_broker else t_broker
                         results.append(f"*Broker {escape_md(display_name)}:*\n🚫 {escape_md(close_msg)}")
@@ -4316,11 +4317,14 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                     msg = "❌ Please specify countries and days."
                 else:
                     sub_results = []
+                    # Определяем hint-страну для LATAM маршрутизации
+                    first_country = next((cd.get("country") for cd in countries_days if cd.get("country", "all").lower() != "all"), None)
                     for cd in countries_days:
                         sub_msg = await action_close_days(
                             broker_id=str(broker_id),
                             country=cd.get("country", "all"),
-                            days_to_close=cd.get("days_to_close", [])
+                            days_to_close=cd.get("days_to_close", []),
+                            country_hint=first_country
                         )
                         sub_results.append(sub_msg)
                     msg = "\n".join(sub_results)
@@ -4800,7 +4804,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # (даже если reply содержит "capitan" или другие ключевые слова)
         crm_commands = ("cap", "price", "wh ", "hours", "прайс", "часы", "кап", "лимит",
                         "schedule", "geo:", "desk", "off", "close", "закрыть", "выходн",
-                        "pause", "back in", "is back", "inactive", "deactivate", "activate", "disable", "enable")
+                        "pause", "back in", "is back", "inactive", "deactivate", "activate", "disable", "enable", "put active", "put inactive")
         # Числа с % (100%) или через / (21/117/28) — не прайсы
         text_no_slashed = re.sub(r'\d+(/\d+)+', '', text)  # убираем "21/117/28/13"
         msg_has_price = bool(re.search(r'\b[A-Z]{2}\b', text_upper_orig) and re.search(r'\b\d{3,4}\b(?!%)', text_no_slashed))
