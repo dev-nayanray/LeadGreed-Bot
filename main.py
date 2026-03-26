@@ -1456,7 +1456,7 @@ async def action_edit_country_add_days(broker_id: str, country: str, start: str,
         await save_btn.click()
         await page.wait_for_timeout(700)
         if is_overnight:
-            return f"✅ {country}: {', '.join(enabled)} with hours {start_val}–{display_end} (split: 00:00–{end_val} + {start_val}–24:00)"
+            return f"✅ {country}: {', '.join(enabled)} with hours {start_val}–{display_end}"
         return f"✅ {country}: days added: {', '.join(enabled)} with hours {start_val}–{display_end}"
     except Exception:
         await _close_modal(page)
@@ -1921,7 +1921,7 @@ async def action_add_country_hours(broker_id: str, country: str, start: str, end
         await save_btn.click()
         await page.wait_for_timeout(700)
         if is_overnight:
-            return f"✅ Hours added for {country}: {start}–{end} (split: 00:00–{end} + {start}–24:00)"
+            return f"✅ Hours added for {country}: {start}–{end}"
         return f"✅ Hours added for {country}: {start}–{end}"
     except Exception:
         return "⚠️ Save button not found. Data may not have been saved."
