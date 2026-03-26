@@ -3971,13 +3971,30 @@ async def _execute_get_task(bot, chat_id: int, action: dict, text: str):
                 await bot.send_message(chat_id, f"*Broker {escape_md(display_name)}:*\n{escape_md(result)}", parse_mode="Markdown", disable_notification=True)
 
         elif a == "get_caps":
-            for bid in action.get("broker_ids", []):
-                lid = alog.log_action("get_caps", str(bid),
-                                      ", ".join(action.get("countries", ["all"])), "pending", user_command=text)
-                result = await action_get_caps(str(bid), action.get("countries", ["all"]),
-                                                   affiliate_id=action.get("affiliate_id"))
-                alog.update_action(lid, "success" if "❌" not in result else "error", result[:200])
-                await bot.send_message(chat_id, f"*Caps {escape_md(str(bid))}:*\n{escape_md(result)}", parse_mode="Markdown", disable_notification=True)
+            # Обработка queries (несколько брокеров/стран в одном сообщении)
+            queries = action.get("queries", [])
+            if queries:
+                for q in queries:
+                    bid = q.get("id", "")
+                    countries = q.get("countries", ["all"])
+                    if not bid:
+                        continue
+                    lid = alog.log_action("get_caps", str(bid),
+                                          ", ".join(countries), "pending", user_command=text)
+                    result = await action_get_caps(str(bid), countries,
+                                                       affiliate_id=action.get("affiliate_id"))
+                    alog.update_action(lid, "success" if "❌" not in result else "error", result[:200])
+                    display_name = _last_broker_full_name if _last_broker_full_name != str(bid) else str(bid)
+                    await bot.send_message(chat_id, f"*Caps {escape_md(display_name)}:*\n{escape_md(result)}", parse_mode="Markdown", disable_notification=True)
+            else:
+                for bid in action.get("broker_ids", []):
+                    lid = alog.log_action("get_caps", str(bid),
+                                          ", ".join(action.get("countries", ["all"])), "pending", user_command=text)
+                    result = await action_get_caps(str(bid), action.get("countries", ["all"]),
+                                                       affiliate_id=action.get("affiliate_id"))
+                    alog.update_action(lid, "success" if "❌" not in result else "error", result[:200])
+                    display_name = _last_broker_full_name if _last_broker_full_name != str(bid) else str(bid)
+                    await bot.send_message(chat_id, f"*Caps {escape_md(display_name)}:*\n{escape_md(result)}", parse_mode="Markdown", disable_notification=True)
 
         alog.set_status("last_action", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
@@ -4757,7 +4774,9 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id not in ALLOWED_USERS:
         return
 
-    text = update.message.text.strip()
+    text = (update.message.text or "").strip()
+    if not text:
+        return
 
     # Если сообщение — ответ на другое сообщение, добавляем контекст
     reply_context = ""
