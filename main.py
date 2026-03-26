@@ -99,6 +99,11 @@ SYSTEM_PROMPT = """
 - close_days    — закрыть конкретные дни (убрать галочки) для страны
 - add_revenue   — добавить прайс/выплату для страны broker
 - toggle_broker — включить / выключить broker
+  "set Legion inactive" / "deactivate Legion" / "disable Capitan" → {"action": "toggle_broker", "broker_ids": ["Legion"], "active": false}
+  "activate Legion" / "enable Capitan" / "set Legion active" → {"action": "toggle_broker", "broker_ids": ["Legion"], "active": true}
+  "swin all crg integrations close" / "close all swin crg" → {"action": "toggle_broker", "broker_ids": ["Swinftd CRG"], "active": false}
+  "close/disable/inactive" = deactivate (active: false). "open/enable/active/activate" = activate (active: true).
+  Бот сам найдёт все совпадения и пропустит уже неактивных.
 - add_affiliate_revenue — добавить прайс/выплату для аффилиата
 - set_prices            — добавить прайсы для НЕСКОЛЬКИХ объектов (брокер + аффилиат) в одном сообщении
 - get_affiliate_revenue — узнать прайс аффилиата для страны
@@ -2760,42 +2765,136 @@ async def action_close_days(broker_id: str, country: str, days_to_close: list) -
 
 
 async def action_toggle_broker(broker_id: str, activate: bool) -> str:
-    """Включить или выключить брокера."""
+    """Включить или выключить брокера (или нескольких по паттерну)."""
     page = await get_page()
 
-    base_path = await find_and_open_broker(page, broker_id)
-    if not base_path:
-        return f"❌ Broker '{broker_id}' not found. Nothing changed."
+    # Ищем через поиск чтобы найти ВСЕ совпадения
+    await page.goto(f"{CRM_URL.rstrip('/')}/clients?search=", wait_until="domcontentloaded", timeout=60000)
+    await page.wait_for_timeout(2000)
 
-    # Переходим напрямую на страницу Settings
-    settings_url = f"{CRM_URL.rstrip('/')}{base_path}/settings"
-    await page.goto(settings_url, wait_until="domcontentloaded", timeout=60000)
-    await page.wait_for_timeout(500)
-    try:
-        toggle = await page.wait_for_selector(
-            "input[type='checkbox'][id*='active'], label:has-text('Broker is active') input",
-            timeout=5000
-        )
-        is_checked = await toggle.is_checked()
+    search = None
+    for selector in [
+        "input[placeholder='Search a broker...']",
+        "input.form-control[type='text']",
+        "input[type='text']",
+    ]:
+        try:
+            search = await page.wait_for_selector(selector, timeout=3000)
+            if search:
+                break
+        except Exception:
+            continue
 
-        if activate and not is_checked:
-            await toggle.check()
-        elif not activate and is_checked:
-            await toggle.uncheck()
-        else:
-            state = "already active" if activate else "already inactive"
-            return f"ℹ️ Broker '{broker_id}' {state}. Nothing changed."
+    if not search:
+        return "❌ Search field not found."
 
-        # Сохраняем
-        save = await page.wait_for_selector("text=SAVE SETTINGS", timeout=4000)
-        await save.click()
-        await page.wait_for_timeout(500)
+    await search.click(click_count=3)
+    await page.keyboard.press("Backspace")
+    await page.wait_for_timeout(300)
+    await search.fill("")
+    await page.wait_for_timeout(200)
+    # Для поиска берём первое слово (напр. "Swinftd CRG" → "Swinftd")
+    search_term = broker_id.split()[0] if broker_id else broker_id
+    await search.type(search_term, delay=60)
+    await page.wait_for_timeout(2000)
 
-        action_word = "enabled" if activate else "disabled"
-        return f"✅ Broker '{broker_id}' successfully {action_word}."
+    # Собираем ВСЕ совпадения с именем и статусом
+    rows = await page.evaluate(r"""(query) => {
+        const results = [];
+        document.querySelectorAll("table tr").forEach(row => {
+            const link = row.querySelector("a[href*='/clients/'][href*='/settings']") ||
+                         row.querySelector("a.btn-primary");
+            if (!link) return;
+            const tds = row.querySelectorAll("td");
+            let name = "";
+            let status = "";
+            tds.forEach(td => {
+                const t = td.innerText.trim();
+                if (["active","inactive","disabled"].includes(t.toLowerCase())) {
+                    status = t.toLowerCase();
+                    return;
+                }
+                if (t && !/^\d+$/.test(t) && t.length > 4) {
+                    if (!name) name = t;
+                }
+            });
+            if (!name && tds.length > 2) name = tds[2].innerText.trim();
+            if (link && name) {
+                results.push({
+                    name: name,
+                    href: link.getAttribute("href"),
+                    status: status || "unknown"
+                });
+            }
+        });
+        return results;
+    }""", search_term)
 
-    except Exception as e:
-        return f"❌ Cannot change broker status: {e}\nNothing changed."
+    log.info(f"Toggle search for '{broker_id}': found {len(rows)} brokers")
+
+    # Фильтруем по паттерну (broker_id может быть "Swinftd CRG" — нужен partial match)
+    query_lower = broker_id.lower().strip()
+    # Убираем эмодзи при сравнении
+    import unicodedata
+    def clean_name(n):
+        return ''.join(c for c in n if not unicodedata.category(c).startswith('So')).strip().lower()
+
+    matching = [r for r in rows if query_lower in clean_name(r["name"])]
+    if not matching:
+        matching = [r for r in rows if all(w in clean_name(r["name"]) for w in query_lower.split())]
+
+    if not matching:
+        return f"❌ No brokers matching '{broker_id}' found."
+
+    log.info(f"Matching brokers: {[(r['name'], r['status']) for r in matching]}")
+
+    # Фильтруем: если деактивируем — только active; если активируем — только inactive
+    if activate:
+        to_toggle = [r for r in matching if r["status"] != "active"]
+    else:
+        to_toggle = [r for r in matching if r["status"] == "active"]
+
+    if not to_toggle:
+        state = "already inactive" if not activate else "already active"
+        names = ", ".join(r["name"] for r in matching)
+        return f"ℹ️ All matching brokers ({names}) are {state}. Nothing changed."
+
+    skipped = [r for r in matching if r not in to_toggle]
+    results = []
+
+    for broker in to_toggle:
+        href = broker["href"]
+        settings_url = f"{CRM_URL.rstrip('/')}{href}" if not href.startswith("http") else href
+        if "/settings" not in settings_url:
+            settings_url = settings_url.replace("/settings", "") + "/settings"
+        await page.goto(settings_url, wait_until="domcontentloaded", timeout=60000)
+        await page.wait_for_timeout(1500)
+
+        try:
+            toggle = await page.wait_for_selector("input#active, input[id*='active'][type='checkbox']", timeout=5000)
+            label = await page.query_selector("label[for='active'].custom-control-label, label:has-text('Broker is active')")
+            if label:
+                await label.click()
+                log.info(f"Clicked toggle for {broker['name']}")
+            else:
+                await toggle.evaluate("el => el.click()")
+            await page.wait_for_timeout(500)
+
+            save = await page.wait_for_selector("text=SAVE SETTINGS", timeout=4000)
+            await save.click()
+            await page.wait_for_timeout(1000)
+
+            action_word = "activated" if activate else "deactivated"
+            results.append(f"✅ {broker['name']}: {action_word}")
+        except Exception as e:
+            results.append(f"❌ {broker['name']}: error — {e}")
+
+    if skipped:
+        state = "already inactive" if not activate else "already active"
+        for s in skipped:
+            results.append(f"⏭ {s['name']}: {state}")
+
+    return "\n".join(results)
 
 
 async def action_change_caps(broker_id: str, country: str, cap_value: int = 0, delta: int = None, affiliate_id: str = None, delete_first: bool = False) -> str:
@@ -3678,10 +3777,10 @@ def build_confirm_text(action: dict) -> str:
 
     if a == "toggle_broker":
         brokers = ", ".join(str(b) for b in action.get("broker_ids", []))
-        word = "ENABLE" if action.get("active") else "DISABLE"
+        word = "ACTIVATE" if action.get("active") else "DEACTIVATE"
         return (
             f"📋 *Confirmation required*\n\n"
-            f"Action: {word} брокера\n"
+            f"Action: {word} broker\n"
             f"Brokers: `{brokers}`\n\n"
             f"Confirm?"
         )
@@ -4677,7 +4776,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # (даже если reply содержит "capitan" или другие ключевые слова)
         crm_commands = ("cap", "price", "wh ", "hours", "прайс", "часы", "кап", "лимит",
                         "schedule", "geo:", "desk", "off", "close", "закрыть", "выходн",
-                        "pause", "back in", "is back")
+                        "pause", "back in", "is back", "inactive", "deactivate", "activate", "disable", "enable")
         # Числа с % (100%) или через / (21/117/28) — не прайсы
         text_no_slashed = re.sub(r'\d+(/\d+)+', '', text)  # убираем "21/117/28/13"
         msg_has_price = bool(re.search(r'\b[A-Z]{2}\b', text_upper_orig) and re.search(r'\b\d{3,4}\b(?!%)', text_no_slashed))
