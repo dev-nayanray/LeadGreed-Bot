@@ -1808,21 +1808,20 @@ async def action_add_country_hours(broker_id: str, country: str, start: str, end
             await set_timepicker(time_inputs[1], end_val)
         await page.wait_for_timeout(300)
 
-        # Нажимаем "+" для Monday — ищем первый plus-circle в модалке
-        plus_clicked = await page.evaluate("""() => {
-            // Ищем все span/div с title "Add a new time step"
-            const addSteps = document.querySelectorAll('.modal .add-step, .modal [title*="Add a new time step"]');
-            if (addSteps.length > 0) { addSteps[0].click(); return 'add-step-' + addSteps.length; }
-            // Fallback: первый plus-circle SVG
-            const svgs = document.querySelectorAll('.modal svg.fa-plus-circle, .modal svg[data-icon="plus-circle"]');
-            if (svgs.length > 0) { svgs[0].click(); return 'svg-' + svgs.length; }
-            // Fallback 2: span содержащий SVG plus
-            const spans = document.querySelectorAll('.modal .add-step');
-            if (spans.length > 0) { spans[0].click(); return 'span-' + spans.length; }
-            return false;
-        }""")
-        log.info(f"Clicked add-step (+): {plus_clicked}")
-        await page.wait_for_timeout(1500)  # больше времени для анимации
+        # Нажимаем "+" для Monday — через Playwright click (не JS)
+        plus_btn = await page.query_selector('.modal [title*="Add a new time step for Monday"], .modal .add-step span[title*="Monday"]')
+        if not plus_btn:
+            # Fallback: первая кнопка add-step
+            plus_btn = await page.query_selector('.modal .add-step span[title*="Add a new time step"]')
+        if not plus_btn:
+            plus_btn = await page.query_selector('.modal svg[data-icon="plus-circle"]')
+
+        if plus_btn:
+            await plus_btn.click()
+            log.info("Clicked '+' via Playwright click")
+        else:
+            log.info("'+' button not found")
+        await page.wait_for_timeout(1500)  # ждём анимацию Vue
 
         # Заново собираем ВСЕ timepicker'ы в модалке
         modal = await page.query_selector(".modal-body, [role='dialog']")
