@@ -482,7 +482,7 @@ Capitan, Legion, Fintrix CRG, Swin FR CRG, Swin FR CRG duplicate, Swin EN CRG, S
 - Если перед именем брокера указан числовой ID (например "2251 - Fugazi CH - CRG"), используй ID: broker_id: "2251"
 - "cap total" или просто "cap" без "aff" — капа БЕЗ affiliate_id
 - Строка "PAUSED" или "паузд" после имени брокера — ЗАКРЫТЬ часы этого брокера на указанный день
-- Строки с "funnel", "map", "keep", "sharing", "dif" — ИГНОРИРУЙ, это инструкции для других людей
+- Строки с "funnel", "map", "keep", "sharing", "dif", "rotation", "what's the rotation", "whats the rotation" — ИГНОРИРУЙ, это не CRM-команды. "rotation" = распределение лидов, НЕ часы.
 - gmt+N — конвертируй время в GMT+2
 
 Результат — action "multi_broker_task" с полем "tasks" (список подзадач):
@@ -1367,6 +1367,14 @@ async def action_edit_country_add_days(broker_id: str, country: str, start: str,
         save_btn = await page.wait_for_selector("text=SAVE OPENING HOURS", timeout=3000)
         await save_btn.click()
         await page.wait_for_timeout(700)
+        # Предупреждение если end < start (время после полуночи)
+        try:
+            s_h = int(start_val.split(":")[0])
+            e_h = int(display_end.split(":")[0])
+            if e_h < s_h:
+                return f"⚠️ {country}: {start_val}–{display_end} saved (WARNING: end time past midnight may not work in CRM)"
+        except Exception:
+            pass
         return f"✅ {country}: days added: {', '.join(enabled)} with hours {start_val}–{display_end}"
     except Exception:
         await _close_modal(page)
@@ -1727,6 +1735,14 @@ async def action_add_country_hours(broker_id: str, country: str, start: str, end
         save_btn = await page.wait_for_selector("text=SAVE OPENING HOURS", timeout=3000)
         await save_btn.click()
         await page.wait_for_timeout(700)
+        # Предупреждение если end < start (время после полуночи)
+        try:
+            s_h = int(start.split(":")[0])
+            e_h = int(end.split(":")[0])
+            if e_h < s_h:
+                return f"⚠️ Hours added for {country}: {start}–{end} (WARNING: end time past midnight may not be supported by CRM)"
+        except Exception:
+            pass
         return f"✅ Hours added for {country}: {start}–{end}"
     except Exception:
         return "⚠️ Save button not found. Data may not have been saved."
@@ -2612,7 +2628,13 @@ async def action_change_caps(broker_id: str, country: str, cap_value: int = 0, d
 
     caps_url = f"{CRM_URL.rstrip('/')}{base_path}/caps"
     await page.goto(caps_url, wait_until="domcontentloaded", timeout=30000)
-    await page.wait_for_timeout(3000)  # даём Vue время отрендерить данные
+    # Ждём загрузки таблицы или кнопки ADD CAP
+    try:
+        await page.wait_for_selector("table tr td, button:has-text('ADD CAP'), a:has-text('ADD CAP')", timeout=10000)
+    except Exception:
+        pass
+    await page.wait_for_timeout(2000)  # даём Vue время отрендерить данные
+    log.info(f"Caps page URL: {page.url}")
 
     # Диагностика
     all_rows_text = await page.evaluate("""() =>
@@ -4504,6 +4526,9 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         # "started" без времени — уведомление о лиде ("Ave DE started"), не команда
         if "started" in text_lower and not re.search(r'\d{1,2}:\d{2}', text):
+            return
+        # "rotation" — распределение лидов, не CRM-команда
+        if "rotation" in text_lower_orig:
             return
         # Вопросы типа "28 DE closed?" с числовым ID — игнорируем (это про аффа)
         # Но "Legion DE closed?" — обрабатываем (это запрос часов брокера)
