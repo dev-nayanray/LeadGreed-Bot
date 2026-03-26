@@ -1102,11 +1102,44 @@ async def action_change_hours(broker_id: str, start: str, end: str,
     pencils_with_names = await collect_pencils()
     log.info(f"Pencil buttons found: {len(pencils_with_names)}")
 
+    # Если конкретные страны запрошены — проверяем есть ли они
+    if "all" not in countries_filter:
+        existing_names = [c.lower() for _, c in pencils_with_names]
+        missing_countries = []
+        for cf in countries_filter:
+            found = any(cf.lower() in en for en in existing_names)
+            if not found:
+                missing_countries.append(cf)
+
+        # Если запрошенная страна не найдена — добавляем через add_country_hours
+        if missing_countries and not pencils_with_names:
+            # Страница пустая — добавляем все запрошенные страны
+            log.info(f"No countries found, adding: {missing_countries}")
+            results = []
+            for mc in missing_countries:
+                sub_msg = await action_add_country_hours(
+                    broker_id=broker_id, country=mc, start=start, end=end,
+                    no_traffic=no_traffic, days_filter=days_filter
+                )
+                results.append(sub_msg)
+            return "\n".join(results)
+        elif missing_countries:
+            # Часть стран не найдена — добавляем их
+            log.info(f"Missing countries, will add: {missing_countries}")
+            add_results = []
+            for mc in missing_countries:
+                sub_msg = await action_add_country_hours(
+                    broker_id=broker_id, country=mc, start=start, end=end,
+                    no_traffic=no_traffic, days_filter=days_filter
+                )
+                add_results.append(sub_msg)
+
     if not pencils_with_names:
         log.info(f"Page URL: {page.url}")
-        return "❌ Edit buttons not found. Nothing changed."
+        return "❌ No countries found for this broker."
 
     # Собираем имена стран для обработки (фильтруем заранее)
+    add_results = []  # результаты добавления новых стран
     countries_to_process = []
     for _, country_name in pencils_with_names:
         if "all" not in countries_filter and country_name:
@@ -1216,7 +1249,8 @@ async def action_change_hours(broker_id: str, start: str, end: str,
             await _close_modal(page)
             results.append(f"⚠️ {country_name}: Save button not found")
 
-    return "\n".join(results) if results else "⚠️ No rows to change."
+    all_results = add_results + results
+    return "\n".join(all_results) if all_results else "⚠️ No rows to change."
 
 
 async def action_edit_country_add_days(broker_id: str, country: str, start: str, end: str,
