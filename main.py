@@ -2002,22 +2002,31 @@ async def action_add_affiliate_revenue(affiliate_id: str, country: str, amount: 
 
     # Проверяем — есть ли уже запись для этой страны
     existing_pencil = None
+    old_amount = None
     if country.lower() != "all":
+        try:
+            await page.wait_for_selector("table tr td", timeout=8000)
+        except Exception:
+            pass
+        await page.wait_for_timeout(1500)
         rows = await page.query_selector_all("table tr")
+        log.info(f"Affiliate payout table rows: {len(rows)}")
         for row in rows:
             country_td = await row.query_selector("td:nth-child(3)")
             if not country_td:
                 continue
             td_text = (await country_td.inner_text()).strip()
             if country.lower() in td_text.lower():
-                existing_pencil = await row.query_selector("button.btn-outline-primary")
+                existing_pencil = await row.query_selector("button.btn-outline-primary, button.btn-primary.btn-sm")
                 if existing_pencil:
                     # Читаем текущую сумму из таблицы (колонка Amount)
-                    amount_td = await row.query_selector("td:nth-child(6), td:nth-child(5)")
+                    amount_td = await row.query_selector("td:nth-child(6), td:nth-child(5), td:nth-child(4)")
                     old_amount = (await amount_td.inner_text()).strip() if amount_td else "?"
                     old_amount = old_amount.replace("$", "").strip()
                     log.info(f"Entry for {country} already exists (${old_amount}) — editing")
                     break
+                else:
+                    log.info(f"Found {country} row but no pencil button")
 
     if existing_pencil:
         # Редактируем существующую запись
@@ -4449,7 +4458,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text_lower = combined_text.lower()
         crm_commands = ("cap", "price", "wh ", "hours", "прайс", "часы", "кап", "лимит",
                         "schedule", "geo:", "desk", "off", "close", "закрыть", "выходн",
-                        "pause", "back in", "start")
+                        "pause", "back in", "is back")
         has_command = any(kw in text_lower for kw in crm_commands)
         # Паттерн 3: время (HH:MM-HH:MM или "at HH:MM") — расписание
         has_time = bool(re.search(r'\d{1,2}:\d{2}\s*[-–]\s*\d{1,2}:\d{2}', combined_text) or
@@ -4458,6 +4467,12 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         # CPL — игнорируем полностью
         if "cpl" in text.lower():
+            return
+        # Сообщения с email — это уведомления о лидах, не CRM-команды
+        if re.search(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', text):
+            return
+        # "started" без времени — уведомление о лиде ("Ave DE started"), не команда
+        if "started" in text_lower and not re.search(r'\d{1,2}:\d{2}', text):
             return
         # Вопросы типа "28 DE closed?" с числовым ID — игнорируем (это про аффа)
         # Но "Legion DE closed?" — обрабатываем (это запрос часов брокера)
