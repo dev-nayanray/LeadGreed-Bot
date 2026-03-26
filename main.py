@@ -1276,6 +1276,18 @@ async def action_edit_country_add_days(broker_id: str, country: str, start: str,
         eh, em = (end.split(":") + ["00"])[:2]
         end_val = f"{eh.zfill(2)}:{em.zfill(2)}"
 
+    # Проверяем: ночные часы?
+    is_overnight = False
+    if end_val:
+        try:
+            s_h = int(start_val.split(":")[0])
+            e_h = int(end_val.split(":")[0])
+            if e_h < s_h:
+                is_overnight = True
+                log.info(f"Overnight hours: {start_val}-{end_val} → 00:00-{end_val} + {start_val}-24:00")
+        except Exception:
+            pass
+
     # Проходим по строкам модалки — каждая строка = один день
     # Включаем только нужные дни и только им меняем время
     checkboxes = await modal.query_selector_all("input[type='checkbox']")
@@ -1302,27 +1314,62 @@ async def action_edit_country_add_days(broker_id: str, country: str, start: str,
             await page.wait_for_timeout(100)
         enabled.append(matched_day.capitalize())
 
-        # Находим timepicker'ы именно этой строки (row/div дня)
-        row_time_inputs = await cb.evaluate(f"""el => {{
-            const row = el.closest('tr, .row, li, [class*="day"]');
-            if (!row) return [];
-            const inputs = row.querySelectorAll('input.timepicker-input, input[class*="timepicker"]');
-            return Array.from(inputs).map(i => i.className);
-        }}""")
-        log.info(f"  Day {matched_day}: timepickers in row = {row_time_inputs}")
-
-        # Если end не указан — читаем текущий end из модалки
-        if not end_val:
-            actual_end = await cb.evaluate("""el => {
+        if is_overnight:
+            # Ночные часы: ставим 00:00-end в первый слот, добавляем второй слот start-24:00
+            # Первый слот: 00:00 - end
+            await cb.evaluate(f"""el => {{
                 const row = el.closest('tr, .row, li, [class*="day"]');
-                if (!row) return '';
+                if (!row) return;
                 const inputs = row.querySelectorAll('input.timepicker-input, input[class*="timepicker"]');
-                return inputs[1] ? inputs[1].value : '';
-            }""")
-            log.info(f"  Read existing end from modal: {actual_end}")
+                if (inputs[0]) {{
+                    inputs[0].value = '00:00';
+                    inputs[0].dispatchEvent(new Event('input', {{bubbles:true}}));
+                    inputs[0].dispatchEvent(new Event('change', {{bubbles:true}}));
+                }}
+                if (inputs[1]) {{
+                    inputs[1].value = '{end_val}';
+                    inputs[1].dispatchEvent(new Event('input', {{bubbles:true}}));
+                    inputs[1].dispatchEvent(new Event('change', {{bubbles:true}}));
+                }}
+            }}""")
+            await page.wait_for_timeout(100)
 
-        # Устанавливаем время — start всегда, end только если указан
-        if end_val:
+            # Нажимаем "+" для этого дня
+            plus_clicked = await cb.evaluate("""el => {
+                const row = el.closest('tr, .row, li, [class*="day"]');
+                if (!row) return false;
+                const plus = row.querySelector('.add-step svg, .add-step, svg.fa-plus-circle, svg[data-icon="plus-circle"]');
+                if (plus) { plus.click(); return true; }
+                // Fallback: span с title "Add a new time step"
+                const span = row.querySelector('[title*="Add a new time step"]');
+                if (span) { span.click(); return true; }
+                return false;
+            }""")
+            log.info(f"  Day {matched_day}: clicked '+' for second slot: {plus_clicked}")
+            await page.wait_for_timeout(600)
+
+            # Второй слот: start - 24:00
+            await cb.evaluate(f"""el => {{
+                const row = el.closest('tr, .row, li, [class*="day"]');
+                if (!row) return;
+                const inputs = row.querySelectorAll('input.timepicker-input, input[class*="timepicker"]');
+                // Второй слот = inputs[2] и inputs[3]
+                if (inputs[2]) {{
+                    inputs[2].value = '{start_val}';
+                    inputs[2].dispatchEvent(new Event('input', {{bubbles:true}}));
+                    inputs[2].dispatchEvent(new Event('change', {{bubbles:true}}));
+                }}
+                if (inputs[3]) {{
+                    inputs[3].value = '24:00';
+                    inputs[3].dispatchEvent(new Event('input', {{bubbles:true}}));
+                    inputs[3].dispatchEvent(new Event('change', {{bubbles:true}}));
+                }}
+            }}""")
+            await page.wait_for_timeout(80)
+            actual_end = end_val
+
+        elif end_val:
+            # Обычные часы — start и end
             await cb.evaluate(f"""el => {{
                 const row = el.closest('tr, .row, li, [class*="day"]');
                 if (!row) return;
@@ -1338,8 +1385,16 @@ async def action_edit_country_add_days(broker_id: str, country: str, start: str,
                     inputs[1].dispatchEvent(new Event('change', {{bubbles:true}}));
                 }}
             }}""")
+            await page.wait_for_timeout(80)
         else:
             # Только start — end оставляем как есть
+            actual_end = await cb.evaluate("""el => {
+                const row = el.closest('tr, .row, li, [class*="day"]');
+                if (!row) return '';
+                const inputs = row.querySelectorAll('input.timepicker-input, input[class*="timepicker"]');
+                return inputs[1] ? inputs[1].value : '';
+            }""")
+            log.info(f"  Read existing end from modal: {actual_end}")
             await cb.evaluate(f"""el => {{
                 const row = el.closest('tr, .row, li, [class*="day"]');
                 if (!row) return;
@@ -1350,7 +1405,7 @@ async def action_edit_country_add_days(broker_id: str, country: str, start: str,
                     inputs[0].dispatchEvent(new Event('change', {{bubbles:true}}));
                 }}
             }}""")
-        await page.wait_for_timeout(80)
+            await page.wait_for_timeout(80)
 
     # No traffic — ставим глобальный чекбокс если есть
     if no_traffic:
@@ -1366,14 +1421,8 @@ async def action_edit_country_add_days(broker_id: str, country: str, start: str,
         save_btn = await page.wait_for_selector("text=SAVE OPENING HOURS", timeout=3000)
         await save_btn.click()
         await page.wait_for_timeout(700)
-        # Предупреждение если end < start (время после полуночи)
-        try:
-            s_h = int(start_val.split(":")[0])
-            e_h = int(display_end.split(":")[0])
-            if e_h < s_h:
-                return f"⚠️ {country}: {start_val}–{display_end} saved (WARNING: end time past midnight may not work in CRM)"
-        except Exception:
-            pass
+        if is_overnight:
+            return f"✅ {country}: {', '.join(enabled)} with hours {start_val}–{display_end} (split: 00:00–{end_val} + {start_val}–24:00)"
         return f"✅ {country}: days added: {', '.join(enabled)} with hours {start_val}–{display_end}"
     except Exception:
         await _close_modal(page)
@@ -1696,10 +1745,85 @@ async def action_add_country_hours(broker_id: str, country: str, start: str, end
         )
         await page.wait_for_timeout(150)
 
-    for i in range(0, len(time_inputs), 2):
-        await set_timepicker(time_inputs[i], start_val)
-        if i + 1 < len(time_inputs):
-            await set_timepicker(time_inputs[i+1], end_val)
+    # Проверяем: ночные часы (end < start, напр. 16:00-01:00)?
+    is_overnight = False
+    try:
+        s_h = int(start_val.split(":")[0])
+        e_h = int(end_val.split(":")[0])
+        if e_h < s_h:
+            is_overnight = True
+    except Exception:
+        pass
+
+    if is_overnight:
+        log.info(f"Overnight hours detected: {start_val}-{end_val} → split into 00:00-{end_val} + {start_val}-24:00")
+        # Ставим первый слот Monday: 00:00 - end
+        if len(time_inputs) >= 2:
+            await set_timepicker(time_inputs[0], "00:00")
+            await set_timepicker(time_inputs[1], end_val)
+
+        # Нажимаем "+" (add-step) для Monday чтобы добавить второй слот
+        add_step_btn = await page.evaluate("""() => {
+            // Ищем кнопку "+" рядом с Monday
+            const days = document.querySelectorAll('.day, [class*="day_inner"]');
+            for (const day of days) {
+                const text = day.textContent || '';
+                if (text.toLowerCase().includes('monday') || text.toLowerCase().includes('copy to all')) {
+                    const plusBtn = day.querySelector('.add-step svg, .add-step, [title*="Add a new time step"]');
+                    if (plusBtn) { plusBtn.click(); return true; }
+                    // Fallback: ищем SVG с plus-circle
+                    const svgs = day.querySelectorAll('svg.fa-plus-circle, svg[data-icon="plus-circle"]');
+                    for (const svg of svgs) { svg.click(); return true; }
+                }
+            }
+            // Fallback: первый plus-circle в модалке
+            const svg = document.querySelector('.modal svg.fa-plus-circle, .modal svg[data-icon="plus-circle"]');
+            if (svg) { svg.click(); return true; }
+            return false;
+        }""")
+        log.info(f"Clicked add-step (+): {add_step_btn}")
+        await page.wait_for_timeout(800)
+
+        # Заново собираем timepicker'ы — теперь их больше
+        modal = await page.query_selector(".modal-body, [role='dialog']")
+        if modal:
+            all_inputs = await modal.query_selector_all("input")
+            time_inputs2 = []
+            for inp in all_inputs:
+                inp_cls = await inp.get_attribute("class") or ""
+                inp_type = await inp.get_attribute("type") or ""
+                if "timepicker" in inp_cls and inp_type == "text":
+                    time_inputs2.append(inp)
+            log.info(f"Timepicker inputs after add-step: {len(time_inputs2)}")
+
+            # Ищем новые инпуты (второй слот Monday) — они должны быть на позициях 2,3
+            # Первый слот Monday: [0]=00:00, [1]=01:00
+            # Второй слот Monday: [2]=start, [3]=24:00
+            if len(time_inputs2) >= 4:
+                await set_timepicker(time_inputs2[2], start_val)
+                await set_timepicker(time_inputs2[3], "24:00")
+                log.info(f"Second slot set: {start_val}-24:00")
+
+        # Нажимаем "copy to all"
+        copied = await page.evaluate("""() => {
+            const spans = document.querySelectorAll('.modal span.font-italic, .modal strong');
+            for (const span of spans) {
+                if (span.textContent.toLowerCase().includes('copy to all')) {
+                    span.click();
+                    return true;
+                }
+            }
+            return false;
+        }""")
+        log.info(f"Clicked 'copy to all': {copied}")
+        await page.wait_for_timeout(500)
+
+    else:
+        # Обычные часы — ставим для всех дней
+        for i in range(0, len(time_inputs), 2):
+            await set_timepicker(time_inputs[i], start_val)
+            if i + 1 < len(time_inputs):
+                await set_timepicker(time_inputs[i+1], end_val)
 
     await page.wait_for_timeout(300)
 
@@ -1734,14 +1858,8 @@ async def action_add_country_hours(broker_id: str, country: str, start: str, end
         save_btn = await page.wait_for_selector("text=SAVE OPENING HOURS", timeout=3000)
         await save_btn.click()
         await page.wait_for_timeout(700)
-        # Предупреждение если end < start (время после полуночи)
-        try:
-            s_h = int(start.split(":")[0])
-            e_h = int(end.split(":")[0])
-            if e_h < s_h:
-                return f"⚠️ Hours added for {country}: {start}–{end} (WARNING: end time past midnight may not be supported by CRM)"
-        except Exception:
-            pass
+        if is_overnight:
+            return f"✅ Hours added for {country}: {start}–{end} (split: 00:00–{end} + {start}–24:00)"
         return f"✅ Hours added for {country}: {start}–{end}"
     except Exception:
         return "⚠️ Save button not found. Data may not have been saved."
