@@ -610,6 +610,17 @@ CRM работает в GMT+2. Если в сообщении указан др�
 
 - Возвращай ТОЛЬКО JSON
 
+Правила для коротких команд в группах:
+- "Legion DE pause for now" / "Legion DE pause" / "пауза Legion DE" → закрыть часы Legion для Germany на сегодня
+  → {"action": "close_days", "broker_ids": ["Legion"], "countries_days": [{"country": "Germany", "days_to_close": ["<сегодняшний день>"]}]}
+- "legion is back in de today at 11:00" / "Legion DE back at 11:00" → поставить часы с 11:00 до конца рабочего дня (19:00 по умолчанию)
+  → {"action": "add_hours", "broker_ids": ["Legion"], "country_hours": [{"country": "Germany", "start": "11:00", "end": "19:00"}], "days_to_keep": ["<сегодня>"], "requested_day": "<сегодня>"}
+- "pause" / "paused" / "пауза" = закрыть часы
+- "back" / "is back" / "started" / "resume" = открыть/поставить часы
+- "Legion DE closed?" / "Nexus FR open?" → проверить часы (get_hours)
+  → {"action": "get_hours", "broker_ids": ["Legion"], "countries": ["Germany"]}
+- Если указано "at HH:MM" без конечного времени — start = указанное время, end = null (бот сам прочитает текущий end из CRM)
+
 Контекст ответа:
 Иногда команда приходит как ответ на другое сообщение. Формат:
 [Ответ на сообщение:]
@@ -1017,6 +1028,32 @@ async def _scrape_countries_from_page(page) -> list:
     return countries
 
 
+async def _read_current_hours_for_country(page, country: str) -> dict:
+    """Прочитать текущие часы работы для страны с открытой страницы Opening Hours.
+    Возвращает {'start': '09:00', 'end': '20:00'} или {} если не найдено."""
+    try:
+        result = await page.evaluate("""(countryName) => {
+            const rows = document.querySelectorAll('table tr, .table tr');
+            for (const row of rows) {
+                const td = row.querySelector('td');
+                if (!td) continue;
+                if (!td.innerText.trim().toLowerCase().includes(countryName.toLowerCase())) continue;
+                // Ищем первую строку с временем (не closed)
+                const text = row.innerText;
+                const timeMatch = text.match(/(\\d{1,2}:\\d{2})\\s*[-–]\\s*(\\d{1,2}:\\d{2})/);
+                if (timeMatch) {
+                    return {start: timeMatch[1], end: timeMatch[2]};
+                }
+            }
+            return {};
+        }""", country)
+        if result:
+            log.info(f"Current hours for {country}: {result.get('start', '?')}-{result.get('end', '?')}")
+        return result or {}
+    except Exception:
+        return {}
+
+
 async def action_change_hours(broker_id: str, start: str, end: str,
                                countries_filter: list, no_traffic: bool,
                                days_filter: list = None) -> str:
@@ -1227,14 +1264,17 @@ async def action_edit_country_add_days(broker_id: str, country: str, start: str,
     log.info(f"Adding days {days_lower} to {country}")
 
     sh, sm = (start.split(":") + ["00"])[:2]
-    eh, em = (end.split(":") + ["00"])[:2]
     start_val = f"{sh.zfill(2)}:{sm.zfill(2)}"
-    end_val   = f"{eh.zfill(2)}:{em.zfill(2)}"
+    end_val = ""
+    if end:
+        eh, em = (end.split(":") + ["00"])[:2]
+        end_val = f"{eh.zfill(2)}:{em.zfill(2)}"
 
     # Проходим по строкам модалки — каждая строка = один день
     # Включаем только нужные дни и только им меняем время
     checkboxes = await modal.query_selector_all("input[type='checkbox']")
     enabled = []
+    actual_end = end_val  # будет обновлён если end пустой
 
     for cb in checkboxes:
         label_text = await cb.evaluate("el => el.closest('label,tr,div')?.textContent?.toLowerCase() || ''")
@@ -1265,22 +1305,45 @@ async def action_edit_country_add_days(broker_id: str, country: str, start: str,
         }}""")
         log.info(f"  Day {matched_day}: timepickers in row = {row_time_inputs}")
 
-        # Устанавливаем время только для этой строки
-        await cb.evaluate(f"""el => {{
-            const row = el.closest('tr, .row, li, [class*="day"]');
-            if (!row) return;
-            const inputs = row.querySelectorAll('input.timepicker-input, input[class*="timepicker"]');
-            if (inputs[0]) {{
-                inputs[0].value = '{start_val}';
-                inputs[0].dispatchEvent(new Event('input', {{bubbles:true}}));
-                inputs[0].dispatchEvent(new Event('change', {{bubbles:true}}));
-            }}
-            if (inputs[1]) {{
-                inputs[1].value = '{end_val}';
-                inputs[1].dispatchEvent(new Event('input', {{bubbles:true}}));
-                inputs[1].dispatchEvent(new Event('change', {{bubbles:true}}));
-            }}
-        }}""")
+        # Если end не указан — читаем текущий end из модалки
+        if not end_val:
+            actual_end = await cb.evaluate("""el => {
+                const row = el.closest('tr, .row, li, [class*="day"]');
+                if (!row) return '';
+                const inputs = row.querySelectorAll('input.timepicker-input, input[class*="timepicker"]');
+                return inputs[1] ? inputs[1].value : '';
+            }""")
+            log.info(f"  Read existing end from modal: {actual_end}")
+
+        # Устанавливаем время — start всегда, end только если указан
+        if end_val:
+            await cb.evaluate(f"""el => {{
+                const row = el.closest('tr, .row, li, [class*="day"]');
+                if (!row) return;
+                const inputs = row.querySelectorAll('input.timepicker-input, input[class*="timepicker"]');
+                if (inputs[0]) {{
+                    inputs[0].value = '{start_val}';
+                    inputs[0].dispatchEvent(new Event('input', {{bubbles:true}}));
+                    inputs[0].dispatchEvent(new Event('change', {{bubbles:true}}));
+                }}
+                if (inputs[1]) {{
+                    inputs[1].value = '{end_val}';
+                    inputs[1].dispatchEvent(new Event('input', {{bubbles:true}}));
+                    inputs[1].dispatchEvent(new Event('change', {{bubbles:true}}));
+                }}
+            }}""")
+        else:
+            # Только start — end оставляем как есть
+            await cb.evaluate(f"""el => {{
+                const row = el.closest('tr, .row, li, [class*="day"]');
+                if (!row) return;
+                const inputs = row.querySelectorAll('input.timepicker-input, input[class*="timepicker"]');
+                if (inputs[0]) {{
+                    inputs[0].value = '{start_val}';
+                    inputs[0].dispatchEvent(new Event('input', {{bubbles:true}}));
+                    inputs[0].dispatchEvent(new Event('change', {{bubbles:true}}));
+                }}
+            }}""")
         await page.wait_for_timeout(80)
 
     # No traffic — ставим глобальный чекбокс если есть
@@ -1292,11 +1355,12 @@ async def action_edit_country_add_days(broker_id: str, country: str, start: str,
                     await cb.evaluate("el => el.click()")
                     await page.wait_for_timeout(100)
 
+    display_end = actual_end or end_val or "?"
     try:
         save_btn = await page.wait_for_selector("text=SAVE OPENING HOURS", timeout=3000)
         await save_btn.click()
         await page.wait_for_timeout(700)
-        return f"✅ {country}: days added: {', '.join(enabled)} with hours {start}–{end}"
+        return f"✅ {country}: days added: {', '.join(enabled)} with hours {start_val}–{display_end}"
     except Exception:
         await _close_modal(page)
         return f"⚠️ {country}: Save button not found."
@@ -3700,7 +3764,9 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                             sub_parts.append(f"🎯 Cap: {cap_msg}")
 
                         # Часы
-                        if task.get("start") and task.get("end"):
+                        if task.get("start"):
+                            t_start = task["start"]
+                            t_end = task.get("end") or ""
                             # Проверяем есть ли страна у брокера
                             page = await get_page()
                             broker_base = await find_and_open_broker(page, t_broker)
@@ -3718,8 +3784,8 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                         hours_msg = await action_edit_country_add_days(
                                             broker_id=t_broker,
                                             country=t_country,
-                                            start=task["start"],
-                                            end=task["end"],
+                                            start=t_start,
+                                            end=t_end,
                                             no_traffic=task.get("no_traffic", True),
                                             days_to_add=[t_day]
                                         )
@@ -3728,16 +3794,16 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                         hours_msg = await action_add_country_hours(
                                             broker_id=t_broker,
                                             country=t_country,
-                                            start=task["start"],
-                                            end=task["end"],
+                                            start=t_start,
+                                            end=t_end,
                                             no_traffic=task.get("no_traffic", True),
                                             days_filter=new_days
                                         )
                                 else:
                                     hours_msg = await action_change_hours(
                                         broker_id=t_broker,
-                                        start=task["start"],
-                                        end=task["end"],
+                                        start=t_start,
+                                        end=t_end,
                                         countries_filter=[t_country],
                                         no_traffic=task.get("no_traffic", True),
                                         days_filter=["Monday","Tuesday","Wednesday","Thursday","Friday"]
@@ -3823,7 +3889,7 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                     for ch in country_hours_list:
                         country_name  = ch.get("country", "")
                         country_start = ch.get("start", "09:00")
-                        country_end   = ch.get("end", "17:00")
+                        country_end   = ch.get("end") or ""
 
                         country_exists = any(country_name.lower() in ec.lower() for ec in existing_countries)
 
@@ -4115,7 +4181,8 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                     for ch in country_hours_list:
                         country_name = ch.get("country", "")
                         country_start = ch.get("start", "09:00")
-                        country_end = ch.get("end", "17:00")
+                        country_end = ch.get("end") or ""
+                        
                         country_exists = any(country_name.lower() in ec.lower() for ec in existing_countries)
 
                         try:
@@ -4381,15 +4448,24 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Паттерн 2: CRM-команды (cap, wh, price, hours)
         text_lower = combined_text.lower()
         crm_commands = ("cap", "price", "wh ", "hours", "прайс", "часы", "кап", "лимит",
-                        "schedule", "geo:", "desk", "off", "close", "закрыть", "выходн", "paused")
+                        "schedule", "geo:", "desk", "off", "close", "закрыть", "выходн",
+                        "pause", "back in", "start")
         has_command = any(kw in text_lower for kw in crm_commands)
-        # Паттерн 3: время (HH:MM-HH:MM) — расписание
-        has_time = bool(re.search(r'\d{1,2}:\d{2}\s*[-–]\s*\d{1,2}:\d{2}', combined_text))
+        # Паттерн 3: время (HH:MM-HH:MM или "at HH:MM") — расписание
+        has_time = bool(re.search(r'\d{1,2}:\d{2}\s*[-–]\s*\d{1,2}:\d{2}', combined_text) or
+                        re.search(r'\bat\s+\d{1,2}:\d{2}', combined_text.lower()))
         if not (has_price_pattern or has_command or has_time):
             return
         # CPL — игнорируем полностью
         if "cpl" in text.lower():
             return
+        # Вопросы типа "28 DE closed?" с числовым ID — игнорируем (это про аффа)
+        # Но "Legion DE closed?" — обрабатываем (это запрос часов брокера)
+        stripped = text.strip()
+        if stripped.endswith("?") and ("close" in text_lower or "open" in text_lower):
+            first_word = stripped.split()[0] if stripped.split() else ""
+            if first_word.isdigit():
+                return
 
     # Если есть контекст из reply — передаём AI оба текста
     if reply_context:
@@ -4421,7 +4497,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Прайсы — выполняем без подтверждения, через очередь, без промежуточных сообщений
-    if action.get("action") in ("add_revenue", "add_affiliate_revenue", "set_prices", "bulk_schedule", "multi_broker_task"):
+    if action.get("action") in ("add_revenue", "add_affiliate_revenue", "set_prices", "bulk_schedule", "multi_broker_task", "close_days"):
         queue_size = _task_queue.qsize()
         if queue_size > 0 and not is_group:
             await update.message.reply_text(f"⏳ Queued, position #{queue_size + 1}…", disable_notification=True)
