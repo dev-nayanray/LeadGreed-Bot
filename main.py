@@ -782,6 +782,7 @@ async def find_and_open_broker(page: Page, broker_id: str, country_hint: str = N
     is_latam = False
     if country_hint and country_hint.lower() in LATAM_COUNTRIES:
         is_latam = True
+    log.info(f"find_and_open_broker: broker_id='{broker_id}', country_hint='{country_hint}', is_latam={is_latam}")
 
     # Если ID числовой — ищем через поиск (чтобы получить полное имя)
     # Если не найдём — fallback на прямой переход
