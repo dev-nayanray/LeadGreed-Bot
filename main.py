@@ -677,7 +677,11 @@ def parse_command(text: str) -> dict:
     resp = client.messages.create(
         model="claude-sonnet-4-20250514",
         max_tokens=4000,
-        system=SYSTEM_PROMPT,
+        system=[{
+            "type": "text",
+            "text": SYSTEM_PROMPT,
+            "cache_control": {"type": "ephemeral"}
+        }],
         messages=[{"role": "user", "content": enriched}]
     )
     raw = resp.content[0].text.strip()
@@ -4805,7 +4809,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # (даже если reply содержит "capitan" или другие ключевые слова)
         crm_commands = ("cap", "price", "wh ", "hours", "прайс", "часы", "кап", "лимит",
                         "schedule", "geo:", "desk", "off", "close", "закрыть", "выходн",
-                        "pause", "back in", "is back", "inactive", "deactivate", "activate", "disable", "enable", "put active", "put inactive")
+                        "pause", "back in", "is back", "inactive", "deactivate", "activate", "disable", "enable", "put active", "put inactive", "total")
         # Числа с % (100%) или через / (21/117/28) — не прайсы
         text_no_slashed = re.sub(r'\d+(/\d+)+', '', text)  # убираем "21/117/28/13"
         msg_has_price = bool(re.search(r'\b[A-Z]{2}\b', text_upper_orig) and re.search(r'\b\d{3,4}\b(?!%)', text_no_slashed))
