@@ -4462,9 +4462,12 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Вопросы типа "28 DE closed?" с числовым ID — игнорируем (это про аффа)
         # Но "Legion DE closed?" — обрабатываем (это запрос часов брокера)
         stripped = text.strip()
-        if stripped.endswith("?") and ("close" in text_lower or "open" in text_lower):
-            first_word = stripped.split()[0] if stripped.split() else ""
-            if first_word.isdigit():
+        first_word = stripped.split()[0] if stripped.split() else ""
+        # Числовой ID + close/pause/off = аффилиат, игнорируем
+        # НО "3372 - GLB CRG" (число-дефис-имя) = брокер с ID, обрабатываем
+        if first_word.isdigit():
+            has_broker_format = bool(re.search(r'^\d+\s*-\s*\w', stripped))
+            if not has_broker_format and any(kw in text_lower for kw in ("close", "pause", "off", "open")):
                 return
 
     # Если есть контекст из reply — передаём AI оба текста
