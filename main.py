@@ -2568,8 +2568,17 @@ async def action_add_affiliate_revenue_grouped(affiliate_id: str, countries: lis
             val_before = await search_input.input_value()
             log.info(f"Search input value before fill: '{val_before}'")
 
-            await search_input.fill(country)
-            await page.wait_for_timeout(600)
+            await search_input.evaluate(f"""el => {{
+                el.value = '';
+                el.dispatchEvent(new Event('input', {{bubbles:true}}));
+                el.dispatchEvent(new Event('change', {{bubbles:true}}));
+            }}""")
+            await page.wait_for_timeout(300)
+            await search_input.focus()
+            for char in country:
+                await page.keyboard.press(char)
+                await page.wait_for_timeout(50)
+            await page.wait_for_timeout(400)
 
             for _ in range(15):
                 await page.wait_for_timeout(200)
@@ -2754,9 +2763,19 @@ async def action_add_revenue_grouped(broker_id: str, countries: list, amount: st
             val_before = await search_input.input_value()
             log.info(f"Search input value before fill: '{val_before}'")
 
-            # fill() — атомарно очищает и вводит, триггерит Vue
-            await search_input.fill(country)
-            await page.wait_for_timeout(600)
+            # fill() не триггерит Vue — используем evaluate с dispatchEvent
+            await search_input.evaluate(f"""el => {{
+                el.value = '';
+                el.dispatchEvent(new Event('input', {{bubbles:true}}));
+                el.dispatchEvent(new Event('change', {{bubbles:true}}));
+            }}""")
+            await page.wait_for_timeout(300)
+            # Вводим страну посимвольно — каждый символ триггерит Vue
+            await search_input.focus()
+            for char in country:
+                await page.keyboard.press(char)
+                await page.wait_for_timeout(50)
+            await page.wait_for_timeout(400)
 
             # Ждём фильтрации
             for _ in range(15):
