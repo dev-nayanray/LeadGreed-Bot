@@ -2567,16 +2567,15 @@ async def action_add_affiliate_revenue_grouped(affiliate_id: str, countries: lis
                 if cnt < 15:
                     break
 
-            clicked = await page.evaluate("""(countryName) => {
-                const items = document.querySelectorAll('li.dropdown-item, .dropdown-item');
-                for (const item of items) {
-                    if (item.innerText.trim().toLowerCase().includes(countryName.toLowerCase())) {
-                        item.click();
-                        return true;
-                    }
-                }
-                return false;
-            }""", country)
+            # Используем реальный Playwright click — JS click закрывает Vue дропдаун
+            items = await page.query_selector_all("li.dropdown-item, .dropdown-item")
+            clicked = False
+            for item in items:
+                txt = (await item.inner_text()).strip()
+                if country.lower() in txt.lower():
+                    await item.click()
+                    clicked = True
+                    break
 
             if clicked:
                 selected.append(country)
@@ -2745,16 +2744,15 @@ async def action_add_revenue_grouped(broker_id: str, countries: list, amount: st
                 if cnt < 15:
                     break
 
-            clicked = await page.evaluate("""(countryName) => {
-                const items = document.querySelectorAll('li.dropdown-item');
-                for (const item of items) {
-                    if (item.innerText.trim().toLowerCase().includes(countryName.toLowerCase())) {
-                        item.click();
-                        return true;
-                    }
-                }
-                return false;
-            }""", country)
+            # Используем реальный Playwright click — JS click закрывает Vue дропдаун
+            items = await page.query_selector_all("li.dropdown-item")
+            clicked = False
+            for item in items:
+                txt = (await item.inner_text()).strip()
+                if country.lower() in txt.lower():
+                    await item.click()
+                    clicked = True
+                    break
 
             if clicked:
                 selected.append(country)
