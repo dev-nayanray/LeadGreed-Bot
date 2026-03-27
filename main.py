@@ -2542,7 +2542,6 @@ async def action_add_affiliate_revenue_grouped(affiliate_id: str, countries: lis
         selected = []
         for country in new_countries:
             items_count = await page.evaluate("() => document.querySelectorAll('li.dropdown-item, .dropdown-item').length")
-            log.info(f"Before {country}: dropdown items = {items_count}")
             if items_count == 0:
                 log.info(f"Reopening dropdown before {country}")
                 dropdown_toggle = await modal.query_selector(
@@ -2566,7 +2565,6 @@ async def action_add_affiliate_revenue_grouped(affiliate_id: str, countries: lis
                 continue
 
             val_before = await search_input.input_value()
-            log.info(f"Search input value before fill: '{val_before}'")
 
             await search_input.evaluate("""el => {
                 el.value = '';
@@ -2746,7 +2744,6 @@ async def action_add_revenue_grouped(broker_id: str, countries: list, amount: st
         for country in new_countries:
             # Проверяем открыт ли дропдаун
             items_count = await page.evaluate("() => document.querySelectorAll('li.dropdown-item').length")
-            log.info(f"Before {country}: dropdown items = {items_count}")
             if items_count == 0:
                 log.info(f"Reopening dropdown before {country}")
                 dropdown_toggle = await modal.query_selector(".smart__dropdown, [class*='smart__dropdown']")
@@ -2769,7 +2766,6 @@ async def action_add_revenue_grouped(broker_id: str, countries: list, amount: st
                 continue
 
             val_before = await search_input.input_value()
-            log.info(f"Search input value before fill: '{val_before}'")
 
             # Очищаем через JS
             await search_input.evaluate("""el => {
@@ -2799,7 +2795,6 @@ async def action_add_revenue_grouped(broker_id: str, countries: list, amount: st
                 cnt = await page.evaluate("() => document.querySelectorAll('li.dropdown-item').length")
                 if cnt < 15:
                     break
-            log.info(f"After fill '{country}': dropdown items = {cnt}")
 
             items = await page.query_selector_all("li.dropdown-item")
             clicked = False
