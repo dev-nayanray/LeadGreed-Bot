@@ -2559,8 +2559,16 @@ async def action_add_affiliate_revenue_grouped(affiliate_id: str, countries: lis
                 log.warning(f"Search input not found for {country}")
                 continue
 
-            await search_input.evaluate("el => { el.value = ''; el.dispatchEvent(new Event('input', {bubbles:true})); }")
+            # Очищаем через тройной клик + Backspace
+            await search_input.click(click_count=3)
+            await page.wait_for_timeout(100)
+            await page.keyboard.press("Backspace")
+            await page.wait_for_timeout(100)
+            val = await search_input.input_value()
+            if val:
+                await search_input.evaluate("el => { el.value = ''; el.dispatchEvent(new Event('input', {bubbles:true})); }")
             await page.wait_for_timeout(200)
+
             await search_input.type(country, delay=60)
 
             for _ in range(20):
@@ -2720,14 +2728,13 @@ async def action_add_revenue_grouped(broker_id: str, countries: list, amount: st
             # Проверяем открыт ли дропдаун по наличию li.dropdown-item
             items_count = await page.evaluate("() => document.querySelectorAll('li.dropdown-item').length")
             if items_count == 0:
-                # Дропдаун закрылся — переоткрываем
                 log.info(f"Reopening dropdown before {country}")
                 dropdown_toggle = await modal.query_selector(".smart__dropdown, [class*='smart__dropdown']")
                 if dropdown_toggle:
                     await dropdown_toggle.click()
                     await page.wait_for_timeout(600)
 
-            # Находим поле поиска
+            # Находим поле поиска и очищаем его
             search_input = await page.query_selector("input[id*='search-input']")
             if not search_input:
                 search_input = await page.query_selector("input[id*='search'], .bg-white input[type='text']")
@@ -2735,12 +2742,21 @@ async def action_add_revenue_grouped(broker_id: str, countries: list, amount: st
                 log.warning(f"Search input not found for {country}")
                 continue
 
-            # Очищаем через JS и вводим страну
-            await search_input.evaluate("el => { el.value = ''; el.dispatchEvent(new Event('input', {bubbles:true})); }")
+            # Очищаем через тройной клик + Delete — надёжно работает с Vue
+            await search_input.click(click_count=3)
+            await page.wait_for_timeout(100)
+            await page.keyboard.press("Backspace")
+            await page.wait_for_timeout(100)
+            # Дополнительно через JS если ещё не пусто
+            val = await search_input.input_value()
+            if val:
+                await search_input.evaluate("el => { el.value = ''; el.dispatchEvent(new Event('input', {bubbles:true})); }")
             await page.wait_for_timeout(200)
+
+            # Вводим страну
             await search_input.type(country, delay=60)
 
-            # Ждём фильтрации
+            # Ждём фильтрации — ждём пока будет < 15 элементов
             for _ in range(20):
                 await page.wait_for_timeout(200)
                 cnt = await page.evaluate("() => document.querySelectorAll('li.dropdown-item').length")
