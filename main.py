@@ -64,22 +64,26 @@ LATAM_COUNTRIES = {
 
 _task_queue: Optional[asyncio.Queue] = None
 _queue_worker_task = None
+_worker_busy: bool = False  # True пока воркер выполняет задачу
 
 
 async def _queue_worker():
     """Воркер — обрабатывает задачи из очереди по одной."""
+    global _worker_busy
     while True:
         task_func, args, kwargs = await _task_queue.get()
+        _worker_busy = True
         try:
             await task_func(*args, **kwargs)
         except Exception as e:
             log.exception(f"Queue error: {e}")
         finally:
+            _worker_busy = False
             _task_queue.task_done()
 
 
 async def enqueue(task_func, *args, **kwargs):
-    """Добавить задачу в очередь. Возвращает позицию в очереди."""
+    """Добавить задачу в очередь. Возвращает True если задача встала в очередь (воркер занят)."""
     await _task_queue.put((task_func, args, kwargs))
     return _task_queue.qsize()
 
@@ -101,8 +105,20 @@ SYSTEM_PROMPT = """
   "set Legion inactive" / "deactivate Legion" / "disable Capitan" → {"action": "toggle_broker", "broker_ids": ["Legion"], "active": false}
   "activate Legion" / "enable Capitan" / "set Legion active" → {"action": "toggle_broker", "broker_ids": ["Legion"], "active": true}
   "swin all crg integrations close" / "close all swin crg" → {"action": "toggle_broker", "broker_ids": ["Swinftd CRG"], "active": false}
-  "close/disable/inactive" = deactivate (active: false). "open/enable/active/activate" = activate (active: true).
-  Бот сам найдёт все совпадения и пропустит уже неактивных.
+  "close/disable/inactive/set inactive/put inactive/make inactive" = deactivate (active: false)
+  "open/enable/active/activate/set active/put active/bring back/back to active/is back/is active now/active now/they're back/use X for" = activate (active: true)
+  Дополнительные примеры (все → toggle_broker):
+  "nexus system bring back to active" → broker_ids: ["Nexus"], active: true
+  "open back ventury" → broker_ids: ["Ventury"], active: true
+  "active now" (в контексте брокера) → active: true
+  "Pls use Fusion for PT injection" / "Put them back active" → broker_ids: ["Fusion"], active: true
+  "please put Swin back to active" → broker_ids: ["Swinftd"], active: true  (все Swin интеграции)
+  "MN is inactive till the next year" → broker_ids: ["MN"], active: false
+  "Kaya is back to active" → broker_ids: ["Kaya"], active: true
+  "Axia put active" → broker_ids: ["Axia"], active: true
+  ВАЖНО: "DE PL RO are working today" после имени брокера — это НЕ toggle, это контекст/информация, игнорируй
+  ВАЖНО: "they solved the issue" / "will update once" / "till the next year" — информационный текст, игнорируй
+  Бот сам найдёт все совпадения и пропустит уже неактивных/активных.
 - add_affiliate_revenue — добавить прайс/выплату для аффилиата
 - set_prices            — добавить прайсы для НЕСКОЛЬКИХ объектов (брокер + аффилиат) в одном сообщении
 - get_affiliate_revenue — узнать прайс аффилиата для страны
@@ -182,6 +198,23 @@ SYSTEM_PROMPT = """
   "AVE CRG DE 1650 16%" → broker_ids: ["PRX_AVE"], countries: ["Germany"], amount: 1650 (CRG = без CPA суффикса)
   "AVE CPA DE 1200" → broker_ids: ["PRX_AVE CPA"], countries: ["Germany"], amount: 1200
   "AVE DE 1650 16%" → broker_ids: ["PRX_AVE"], countries: ["Germany"], amount: 1650 (есть % = CRG)
+
+ВАЖНО — маппинг MN:
+У MN есть несколько интеграций в CRM, но работаем только с двумя:
+  • "1961 - MN FR" (ID 1961) — ТОЛЬКО для Франции
+  • "272 - MN" (ID 272) — для всех остальных стран (не Франции)
+  MN 216 и MN FR 216 (ID 3192, 3202) — НЕ трогаем, игнорируем.
+Правила выбора:
+  • Страна = France → broker_ids: ["1961"]
+  • Страна ≠ France → broker_ids: ["272"]
+  • Если страны разные (одна FR + другие) → две отдельных задачи: "1961" для FR, "272" для остальных
+Примеры:
+  "mn fr wh" → {"action": "get_hours", "broker_ids": ["1961"], "countries": ["France"]}
+  "1961 mn fr wh" → {"action": "get_hours", "broker_ids": ["1961"], "countries": ["France"]}
+  "mn de wh" → {"action": "get_hours", "broker_ids": ["272"], "countries": ["Germany"]}
+  "mn fr de wh" → broker_ids: ["1961"] для France, broker_ids: ["272"] для Germany (два запроса)
+  "MN FR 1400" → {"action": "add_revenue", "broker_ids": ["1961"], "country_revenues": [{"country": "France", "amount": 1400}]}
+  "MN DE 1200" → {"action": "add_revenue", "broker_ids": ["272"], "country_revenues": [{"country": "Germany", "amount": 1200}]}
   • Swinftd CRG FR (для Франции CRG)
   • Swinftd CRG FR DUPLICATE (для Франции CRG, дубликат)
   • Swinftd CRG ENG (для всех остальных стран CRG)
@@ -355,6 +388,15 @@ SYSTEM_PROMPT = """
   Признаки что это АФФИЛИАТ (используй add_affiliate_revenue):
   • Просто число без имени и без дефиса: "159", "71", "28"
   • Число из 1-3 цифр стоит одно на строке
+  • ОБЯЗАТЕЛЬНО: должна быть явная сумма прайса (обычно 400–2000). Без суммы — это НЕ прайс, action: "unknown"
+
+  ВАЖНО: если в сообщении есть число (ID аффа) + страны, но НЕТ явной суммы — это НЕ add_affiliate_revenue.
+  Примеры сообщений БЕЗ суммы — action: "unknown":
+  • "112 pls set in\nES MN/Avelux\nIT MN/Nexus" — нет суммы, непонятная команда → unknown
+  • "159 DE ES" — нет суммы → unknown
+  Примеры С суммой — add_affiliate_revenue:
+  • "159 DE 1300" — есть сумма 1300 → ok
+  • "112\nES 800\nIT 900" — есть суммы → ok
 
   Примеры:
   • "3422 - Naga Joshua\n71 BR 800" → broker_id: "3422", country: "Brazil", amount: 800, affiliate_id: "71" (add_revenue)
@@ -430,13 +472,15 @@ SYSTEM_PROMPT = """
   • "today" / "сегодня" → days_to_keep: [название сегодняшнего дня]
   • "tomorrow" / "завтра" → days_to_keep: [название завтрашнего дня]
   • Название дня (Monday, Saturday...) → days_to_keep: [этот день]
+  • "from Monday" / "from [день]" / "starting Monday" / "с понедельника" — НЕ означает "только понедельник"!
+    Это означает "начиная с этого момента, все рабочие дни". → days_to_keep: ["Monday","Tuesday","Wednesday","Thursday","Friday"], requested_day: null
 - Вторая строка содержит брокера, капу и часы:
   • Первое слово/фраза до числа — имя брокера → broker_ids
   • "N cap" — лимит → country_caps: [{country, cap: N}]
   • HH:MM-HH:MM или HH:MM–HH:MM — часы работы → hours start/end
   • HH.MM-HH.MM (с точками) — тоже часы работы. Конвертируй в HH:MM формат: 14.00 → 14:00, 22.30 → 22:30, 17.00 → 17:00
   • "00:00" в конце времени означает полночь — оставляй как "00:00"
-  • gmt+N / UTC+N — часовой пояс, ИГНОРИРУЙ (CRM сам управляет таймзоной)
+  • gmt+N / UTC+N — часовой пояс, конвертируй в GMT+3 (CRM работает в GMT+3)
 - Если в сообщении есть И часы, И капа — используй action: "lead_task"
 - Если только часы (без "N cap") — используй action: "add_hours"
 - Если только капа (без HH:MM-HH:MM) — используй action: "change_caps"
@@ -513,7 +557,7 @@ Capitan, Legion, Fintrix CRG, Swin FR CRG, Swin FR CRG duplicate, Swin EN CRG, S
 - "cap total" или просто "cap" без "aff" — капа БЕЗ affiliate_id
 - Строка "PAUSED" или "паузд" после имени брокера — ЗАКРЫТЬ часы этого брокера на указанный день
 - Строки с "funnel", "map", "keep", "sharing", "dif", "rotation", "what's the rotation", "whats the rotation" — ИГНОРИРУЙ, это не CRM-команды. "rotation" = распределение лидов, НЕ часы.
-- gmt+N — конвертируй время в GMT+2
+- gmt+N — конвертируй время в GMT+3
 
 Результат — action "multi_broker_task" с полем "tasks" (список подзадач):
 {
@@ -621,13 +665,14 @@ Capitan, Legion, Fintrix CRG, Swin FR CRG, Swin FR CRG duplicate, Swin EN CRG, S
 - Для desk-формата всегда ставь "skip_missing": true — не нужно добавлять страны которых not found for broker, только обновлять существующие
 
 ВАЖНО — конвертация часовых поясов:
-CRM работает в GMT+2. Если в сообщении указан другой часовой пояс (GMT+3, GMT+1, UTC+3...) — ОБЯЗАТЕЛЬНО конвертируй все часы в GMT+2 перед записью в JSON.
-Формула: время_GMT2 = время_оригинал - (оригинал_offset - 2)
+CRM работает в GMT+3. Если в сообщении указан другой часовой пояс (GMT+2, GMT+1, UTC+0...) — ОБЯЗАТЕЛЬНО конвертируй все часы в GMT+3 перед записью в JSON.
+Формула: время_GMT3 = время_оригинал - (оригинал_offset - 3)
 Примеры:
-  • GMT+3 → GMT+2: вычитаем 1 час. "14:00-20:00 GMT+3" → "13:00-19:00"
-  • GMT+1 → GMT+2: прибавляем 1 час. "10:00-18:00 GMT+1" → "11:00-19:00"
-  • GMT+0 → GMT+2: прибавляем 2 часа. "08:00-16:00 GMT+0" → "10:00-18:00"
-  • Если часовой пояс не указан — считай что время уже в GMT+2, ничего не конвертируй.
+  • GMT+3 → GMT+3: ничего не меняем. "14:00-20:00 GMT+3" → "14:00-20:00"
+  • GMT+2 → GMT+3: прибавляем 1 час. "10:00-18:00 GMT+2" → "11:00-19:00"
+  • GMT+1 → GMT+3: прибавляем 2 часа. "10:00-18:00 GMT+1" → "12:00-20:00"
+  • GMT+0 → GMT+3: прибавляем 3 часа. "08:00-16:00 GMT+0" → "11:00-19:00"
+  • Если часовой пояс не указан — считай что время уже в GMT+3, ничего не конвертируй.
 Всегда записывай в JSON уже сконвертированное время.
 
 Пример команды: "поставь hours for этих стран на субботу: JP desk 07:30-12:30 / GEO: JP / EN desk 11:00-17:00 / GEO: BE FI NL"
@@ -2255,10 +2300,15 @@ async def action_add_affiliate_revenue(affiliate_id: str, country: str, amount: 
             if country.lower() in td_text.lower():
                 existing_pencil = await row.query_selector("button.btn-outline-primary, button.btn-primary.btn-sm")
                 if existing_pencil:
-                    # Читаем текущую сумму из таблицы (колонка Amount)
-                    amount_td = await row.query_selector("td:nth-child(6), td:nth-child(5), td:nth-child(4)")
-                    old_amount = (await amount_td.inner_text()).strip() if amount_td else "?"
-                    old_amount = old_amount.replace("$", "").strip()
+                    # Читаем текущую сумму — ищем td с числовым значением (не "Fixed amount")
+                    old_amount = "?"
+                    all_tds = await row.query_selector_all("td")
+                    for td in all_tds:
+                        td_text = (await td.inner_text()).strip().replace("$", "").strip()
+                        # Ищем td где содержимое — просто число
+                        if td_text.replace(".", "").replace(",", "").isdigit():
+                            old_amount = td_text
+                            break
                     log.info(f"Entry for {country} already exists (${old_amount}) — editing")
                     break
                 else:
@@ -2408,6 +2458,375 @@ async def action_add_affiliate_revenue(affiliate_id: str, country: str, amount: 
         log.error(f"Кнопка Save not foundа: {e}")
         await _close_modal(page)
         return "⚠️ Save button not found."
+
+
+async def action_add_affiliate_revenue_grouped(affiliate_id: str, countries: list, amount: str) -> str:
+    """Добавить прайс для НЕСКОЛЬКИХ стран аффилиата за один проход модалки (мультиселект)."""
+    page = await get_page()
+
+    affiliate_id = str(affiliate_id).strip()
+    if affiliate_id.isdigit():
+        aff_base = f"/sources/{affiliate_id}"
+        test_url = f"{CRM_URL.rstrip('/')}{aff_base}/settings"
+        await page.goto(test_url, wait_until="domcontentloaded", timeout=60000)
+        await page.wait_for_timeout(800)
+        if "login" in page.url.lower() or "/sources?" in page.url:
+            return f"❌ Affiliate '{affiliate_id}' not found."
+    else:
+        return f"❌ Please provide numeric affiliate ID."
+
+    payouts_url = f"{CRM_URL.rstrip('/')}{aff_base}/payouts"
+    await page.goto(payouts_url, wait_until="domcontentloaded", timeout=60000)
+    await page.wait_for_timeout(1500)
+
+    # Разделяем страны на новые (нужно ADD) и существующие (нужно EDIT отдельно)
+    try:
+        await page.wait_for_selector("table tr td", timeout=8000)
+    except Exception:
+        pass
+    await page.wait_for_timeout(1000)
+
+    existing_rows = await page.evaluate("""() => {
+        const result = [];
+        document.querySelectorAll("table tr").forEach(row => {
+            const td = row.querySelector("td:nth-child(3)");
+            if (td) result.push(td.innerText.trim().toLowerCase());
+        });
+        return result;
+    }""")
+
+    new_countries = []
+    existing_countries_to_edit = []
+    for c in countries:
+        if any(c.lower() in row for row in existing_rows):
+            existing_countries_to_edit.append(c)
+        else:
+            new_countries.append(c)
+
+    results = []
+
+    # Существующие — редактируем по одной (старый способ)
+    for c in existing_countries_to_edit:
+        sub_msg = await action_add_affiliate_revenue(affiliate_id, c, amount)
+        results.append(sub_msg)
+
+    # Новые — открываем модалку ОДИН раз и выбираем все страны
+    if new_countries:
+        try:
+            add_btn = await page.wait_for_selector(
+                "button:has-text('ADD PAYOUT'), a:has-text('ADD PAYOUT')", timeout=12000
+            )
+            await add_btn.click()
+            await page.wait_for_timeout(800)
+        except Exception:
+            for c in new_countries:
+                results.append(f"❌ {c}: ADD PAYOUT button not found.")
+            return "\n".join(results)
+
+        try:
+            modal = await page.wait_for_selector(".modal-body, [role='dialog']", timeout=5000)
+        except Exception:
+            for c in new_countries:
+                results.append(f"❌ {c}: Modal did not open.")
+            return "\n".join(results)
+        await page.wait_for_timeout(500)
+
+        # Открываем дропдаун стран
+        dropdown_toggle = await modal.query_selector(
+            ".smart__dropdown, [class*='smart__dropdown'], .smart__dropdown__input__element"
+        )
+        if dropdown_toggle:
+            await dropdown_toggle.click()
+            await page.wait_for_timeout(400)
+
+        # Выбираем каждую страну по очереди — дропдаун остаётся открытым (мультиселект)
+        selected = []
+        for country in new_countries:
+            search_input = await page.query_selector("input[id*='search-input'], input[id*='search']")
+            if not search_input:
+                search_input = await page.query_selector(".bg-white input[type='text'], [class*='dropdown__menu'] input")
+            if not search_input:
+                log.warning(f"Search input not found for {country}")
+                continue
+
+            # Очищаем поле и вводим новую страну
+            await search_input.click(click_count=3)
+            await page.keyboard.press("Control+a")
+            await page.keyboard.press("Delete")
+            await page.wait_for_timeout(200)
+            await search_input.type(country, delay=50)
+
+            # Ждём пока список отфильтруется
+            for _ in range(20):
+                await page.wait_for_timeout(200)
+                cnt = await page.evaluate("() => document.querySelectorAll('li.dropdown-item, .dropdown-item').length")
+                if cnt < 10:
+                    break
+
+            # Кликаем на нужную страну
+            clicked = await page.evaluate("""(countryName) => {
+                const items = document.querySelectorAll('li.dropdown-item, .dropdown-item');
+                for (const item of items) {
+                    if (item.innerText.trim().toLowerCase().includes(countryName.toLowerCase())) {
+                        item.click();
+                        return true;
+                    }
+                }
+                return false;
+            }""", country)
+
+            if clicked:
+                selected.append(country)
+                log.info(f"Selected country: {country}")
+            else:
+                log.warning(f"Country not found in dropdown: {country}")
+            await page.wait_for_timeout(300)
+
+        if not selected:
+            await _close_modal(page)
+            for c in new_countries:
+                results.append(f"❌ {c}: not found in dropdown.")
+            return "\n".join(results)
+
+        # Закрываем дропдаун — кликаем на modal вне дропдауна
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(400)
+
+        modal = await page.query_selector(".modal-body, [role='dialog']")
+        if not modal:
+            for c in new_countries:
+                results.append(f"❌ {c}: modal closed unexpectedly.")
+            return "\n".join(results)
+
+        # Вводим сумму
+        amount_input = await modal.query_selector("input[type='text'].form-control, input[type='number'], input[placeholder*='amount' i]")
+        if not amount_input:
+            all_inputs = await modal.query_selector_all("input")
+            for inp in all_inputs:
+                inp_id = await inp.get_attribute("id") or ""
+                inp_type = await inp.get_attribute("type") or ""
+                if "search" not in inp_id and inp_type != "checkbox":
+                    amount_input = inp
+                    break
+
+        if amount_input:
+            await amount_input.click(click_count=3)
+            await amount_input.type(str(amount))
+            await page.wait_for_timeout(300)
+        else:
+            await _close_modal(page)
+            for c in new_countries:
+                results.append(f"❌ {c}: Amount field not found.")
+            return "\n".join(results)
+
+        # Сохраняем
+        await page.wait_for_timeout(400)
+        try:
+            save_btn = await page.wait_for_selector(
+                ".modal button[type='submit'], .modal-footer button[type='submit'], .modal .btn-ladda",
+                timeout=5000
+            )
+            await save_btn.click()
+            await page.wait_for_timeout(1200)
+            for c in selected:
+                results.append(f"✅ Price added for {c}: ${amount}")
+            not_selected = [c for c in new_countries if c not in selected]
+            for c in not_selected:
+                results.append(f"❌ {c}: not found in dropdown.")
+        except Exception:
+            await _close_modal(page)
+            for c in new_countries:
+                results.append(f"⚠️ {c}: Save button not found.")
+
+    return "\n".join(results)
+
+
+async def action_add_revenue_grouped(broker_id: str, countries: list, amount: str, affiliate_id: str = None, base_path: str = None) -> str:
+    """Добавить/обновить прайс для НЕСКОЛЬКИХ стран брокера за один проход модалки (мультиселект)."""
+    page = await get_page()
+
+    if not base_path:
+        base_path = await find_and_open_broker(page, broker_id, country_hint=countries[0] if countries else None)
+    if not base_path:
+        return f"❌ Broker '{broker_id}' not found."
+
+    rev_url = f"{CRM_URL.rstrip('/')}{base_path}/revenues"
+    await page.goto(rev_url, wait_until="domcontentloaded", timeout=60000)
+    await page.wait_for_timeout(1000)
+
+    # Разделяем на новые и существующие
+    try:
+        await page.wait_for_selector("table tr td", timeout=5000)
+    except Exception:
+        pass
+    await page.wait_for_timeout(1500)
+
+    existing_rows = await page.evaluate("""() => {
+        const result = [];
+        document.querySelectorAll("table tr td:first-child").forEach(td => {
+            result.push(td.innerText.trim().toLowerCase());
+        });
+        return result;
+    }""")
+
+    new_countries = []
+    existing_to_edit = []
+    for c in countries:
+        if any(c.lower() in row for row in existing_rows):
+            existing_to_edit.append(c)
+        else:
+            new_countries.append(c)
+
+    results = []
+
+    # Существующие — редактируем по одной
+    for c in existing_to_edit:
+        sub_msg = await action_add_revenue(broker_id, c, amount, affiliate_id=affiliate_id, base_path=base_path)
+        results.append(sub_msg)
+
+    # Новые — один проход ADD REVENUE с мультиселектом
+    if new_countries:
+        try:
+            add_btn = await page.wait_for_selector(
+                "button:has-text('ADD REVENUE'), button:has-text('ADD THE FIRST REVENUE')", timeout=10000
+            )
+            await add_btn.click()
+            await page.wait_for_timeout(800)
+        except Exception:
+            for c in new_countries:
+                results.append(f"❌ {c}: ADD REVENUE button not found.")
+            return "\n".join(results)
+
+        try:
+            modal = await page.wait_for_selector(".modal-body, [role='dialog']", timeout=5000)
+        except Exception:
+            for c in new_countries:
+                results.append(f"❌ {c}: Modal did not open.")
+            return "\n".join(results)
+        await page.wait_for_timeout(500)
+
+        # Открываем дропдаун стран
+        dropdown_toggle = await modal.query_selector(".smart__dropdown, [class*='smart__dropdown']")
+        if dropdown_toggle:
+            await dropdown_toggle.click()
+            await page.wait_for_timeout(400)
+
+        # Выбираем страны по очереди (мультиселект — дропдаун остаётся открытым)
+        selected = []
+        for country in new_countries:
+            search_input = await page.query_selector("input[id*='search-input'], input[id*='search']")
+            if not search_input:
+                search_input = await page.query_selector(".bg-white input[type='text'], [class*='dropdown__menu'] input")
+            if not search_input:
+                continue
+
+            await search_input.click(click_count=3)
+            await page.keyboard.press("Control+a")
+            await page.keyboard.press("Delete")
+            await page.wait_for_timeout(200)
+            await search_input.type(country, delay=50)
+            for _ in range(20):
+                await page.wait_for_timeout(200)
+                cnt = await page.evaluate("() => document.querySelectorAll('li.dropdown-item').length")
+                if cnt < 10:
+                    break
+
+            clicked = await page.evaluate("""(countryName) => {
+                const items = document.querySelectorAll('li.dropdown-item');
+                for (const item of items) {
+                    if (item.innerText.trim().toLowerCase().includes(countryName.toLowerCase())) {
+                        item.click();
+                        return true;
+                    }
+                }
+                return false;
+            }""", country)
+
+            if clicked:
+                selected.append(country)
+                log.info(f"Selected country for grouped revenue: {country}")
+            await page.wait_for_timeout(300)
+
+        if not selected:
+            await _close_modal(page)
+            for c in new_countries:
+                results.append(f"❌ {c}: not found in dropdown.")
+            return "\n".join(results)
+
+        # Закрываем дропдаун
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(400)
+
+        modal = await page.query_selector(".modal-body, [role='dialog']")
+        if not modal:
+            for c in new_countries:
+                results.append(f"❌ {c}: modal closed unexpectedly.")
+            return "\n".join(results)
+
+        # Вводим сумму
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(300)
+        amount_input = await modal.query_selector("input[type='number'], input[placeholder*='amount' i], input[placeholder*='Amount' i]")
+        if not amount_input:
+            all_inputs = await modal.query_selector_all("input")
+            for inp in all_inputs:
+                inp_id = await inp.get_attribute("id") or ""
+                inp_type = await inp.get_attribute("type") or ""
+                if "search" not in inp_id and inp_type != "checkbox":
+                    amount_input = inp
+                    break
+
+        if amount_input:
+            await amount_input.click()
+            await amount_input.fill(str(amount))
+            await page.wait_for_timeout(300)
+        else:
+            await _close_modal(page)
+            for c in new_countries:
+                results.append(f"❌ {c}: Amount field not found.")
+            return "\n".join(results)
+
+        # Добавляем affiliate_id если нужно
+        if affiliate_id:
+            modal = await page.query_selector(".modal-body, [role='dialog']")
+            if modal:
+                await _add_affiliate_parameter(page, modal, str(affiliate_id), close_dropdown=False)
+                await page.evaluate("""() => {
+                    const closeBtns = document.querySelectorAll('.modal .close, [role=dialog] .close, button[aria-label="Close"]');
+                    if (closeBtns.length > 1) closeBtns[closeBtns.length - 1].click();
+                }""")
+                await page.wait_for_timeout(400)
+
+        # Сохраняем
+        await page.wait_for_timeout(500)
+        try:
+            saved = await page.evaluate("""() => {
+                const modals = document.querySelectorAll('.modal.show, [role=dialog]');
+                for (const modal of modals) {
+                    const footer = modal.querySelector('.modal-footer');
+                    if (footer) {
+                        const btn = footer.querySelector('button[type=submit], .btn-ladda, .btn-success');
+                        if (btn) { btn.click(); return true; }
+                    }
+                }
+                return false;
+            }""")
+            await page.wait_for_timeout(1200)
+            aff_label = f" (aff {affiliate_id})" if affiliate_id else ""
+            if saved:
+                for c in selected:
+                    results.append(f"✅ Price added for {c}: ${amount}{aff_label}")
+            else:
+                raise Exception("Save button not found")
+            not_selected = [c for c in new_countries if c not in selected]
+            for c in not_selected:
+                results.append(f"❌ {c}: not found in dropdown.")
+        except Exception:
+            await _close_modal(page)
+            for c in new_countries:
+                results.append(f"⚠️ {c}: Save button not found.")
+
+    return "\n".join(results)
 
 
 async def action_add_revenue(broker_id: str, country: str, amount: str, affiliate_id: str = None, base_path: str = None) -> str:
@@ -2945,7 +3364,7 @@ async def action_toggle_broker(broker_id: str, activate: bool) -> str:
             await save.click()
             await page.wait_for_timeout(1000)
 
-            action_word = "activated" if activate else "deactivated"
+            action_word = "active" if activate else "inactive"
             results.append(f"✅ {broker['name']}: {action_word}")
         except Exception as e:
             results.append(f"❌ {broker['name']}: error — {e}")
@@ -4439,15 +4858,32 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                         page = await get_page()
                         first_country = next((cr.get("country") for cr in country_revenues if cr.get("country", "all").lower() != "all"), None)
                         rev_broker_base = await find_and_open_broker(page, str(broker_id), country_hint=first_country)
+                        # Группируем страны по одинаковой сумме + affiliate_id
+                        from collections import defaultdict
+                        groups = defaultdict(list)
                         for cr in country_revenues:
-                            sub_msg = await action_add_revenue(
-                                broker_id=str(broker_id),
-                                country=cr.get("country", "all"),
-                                amount=str(cr.get("amount", "")),
-                                affiliate_id=str(cr["affiliate_id"]) if cr.get("affiliate_id") else None,
-                                base_path=rev_broker_base
-                            )
-                            sub_results.append(sub_msg)
+                            key = (str(cr.get("amount", "")), str(cr.get("affiliate_id") or ""))
+                            groups[key].append(cr.get("country", "all"))
+                        for (grp_amount, grp_aff_id), grp_countries in groups.items():
+                            aff_param = grp_aff_id if grp_aff_id else None
+                            if len(grp_countries) == 1:
+                                sub_msg = await action_add_revenue(
+                                    broker_id=str(broker_id),
+                                    country=grp_countries[0],
+                                    amount=grp_amount,
+                                    affiliate_id=aff_param,
+                                    base_path=rev_broker_base
+                                )
+                                sub_results.append(sub_msg)
+                            else:
+                                sub_msg = await action_add_revenue_grouped(
+                                    broker_id=str(broker_id),
+                                    countries=grp_countries,
+                                    amount=grp_amount,
+                                    affiliate_id=aff_param,
+                                    base_path=rev_broker_base
+                                )
+                                sub_results.append(sub_msg)
                         msg = "\n".join(sub_results)
             elif a == "add_affiliate_revenue":
                 aff_id = str(action.get("affiliate_id") or broker_id)
@@ -4462,13 +4898,28 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                     msg = "❌ Please specify country and amount."
                 else:
                     sub_results = []
+                    # Группируем страны по одинаковой сумме → меньше открытий модалки
+                    from collections import defaultdict
+                    groups = defaultdict(list)
                     for cr in cr_list:
-                        sub_msg = await action_add_affiliate_revenue(
-                            affiliate_id=aff_id,
-                            country=cr.get("country", "all"),
-                            amount=str(cr.get("amount", ""))
-                        )
-                        sub_results.append(sub_msg)
+                        groups[str(cr.get("amount", ""))].append(cr.get("country", "all"))
+                    for grp_amount, grp_countries in groups.items():
+                        if len(grp_countries) == 1:
+                            # Одна страна — старый способ
+                            sub_msg = await action_add_affiliate_revenue(
+                                affiliate_id=aff_id,
+                                country=grp_countries[0],
+                                amount=grp_amount
+                            )
+                            sub_results.append(sub_msg)
+                        else:
+                            # Несколько стран с одной суммой — групповой способ
+                            sub_msg = await action_add_affiliate_revenue_grouped(
+                                affiliate_id=aff_id,
+                                countries=grp_countries,
+                                amount=grp_amount
+                            )
+                            sub_results.append(sub_msg)
                     msg = "\n".join(sub_results)
             elif a == "toggle_broker":
                 msg = await action_toggle_broker(str(broker_id), action.get("active", True))
@@ -4911,7 +5362,9 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # (даже если reply содержит "capitan" или другие ключевые слова)
         crm_commands = ("cap", "price", "wh ", "hours", "прайс", "часы", "кап", "лимит",
                         "schedule", "geo:", "desk", "off", "close", "закрыть", "выходн",
-                        "pause", "back in", "is back", "inactive", "deactivate", "activate", "disable", "enable", "put active", "put inactive", "total")
+                        "pause", "back in", "is back", "inactive", "deactivate", "activate", "disable", "enable",
+                        "put active", "put inactive", "bring back", "back to active", "active now", "is active",
+                        "set active", "set inactive", "make active", "make inactive", "total")
         # Числа с % (100%) или через / (21/117/28) — не прайсы
         text_no_slashed = re.sub(r'\d+(/\d+)+', '', text)  # убираем "21/117/28/13"
         msg_has_price = bool(re.search(r'\b[A-Z]{2}\b', text_upper_orig) and re.search(r'\b\d{3,4}\b(?!%)', text_no_slashed))
@@ -4995,19 +5448,23 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Get-операции — выполняем без подтверждения, через очередь
     if action.get("action") in ("get_prices", "get_broker_revenue", "get_affiliate_revenue", "get_hours", "get_caps"):
         queue_size = _task_queue.qsize()
-        if queue_size > 0:
-            await update.message.reply_text(f"⏳ Queued, position #{queue_size + 1}…", disable_notification=True)
-        elif not is_group:
+        is_busy = _worker_busy or queue_size > 0
+        if is_busy:
+            position = queue_size + (1 if _worker_busy else 0) + 1
+            await update.message.reply_text(f"⏳ Queued, position #{position}…", disable_notification=True)
+        else:
             emoji = "🔍" if action.get("action") != "get_hours" else "🕐"
-            await update.message.reply_text(f"{emoji} Looking up...", disable_notification=True)
+            await update.message.reply_text(f"{emoji} Checking…", disable_notification=True)
         await enqueue(_execute_get_task, context.bot, chat_id, action, text)
         return
 
     # Прайсы — выполняем без подтверждения, через очередь, без промежуточных сообщений
     if action.get("action") in ("add_revenue", "add_affiliate_revenue", "set_prices", "bulk_schedule", "multi_broker_task"):
         queue_size = _task_queue.qsize()
-        if queue_size > 0 and not is_group:
-            await update.message.reply_text(f"⏳ Queued, position #{queue_size + 1}…", disable_notification=True)
+        is_busy = _worker_busy or queue_size > 0
+        if is_busy and not is_group:
+            position = queue_size + (1 if _worker_busy else 0) + 1
+            await update.message.reply_text(f"⏳ Queued, position #{position}…", disable_notification=True)
         action["_user_command"] = text
         await enqueue(_execute_confirmed_task, context.bot, chat_id, action)
         return
@@ -5076,8 +5533,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cc["_delete_first"] = True
 
     queue_size = _task_queue.qsize()
-    if queue_size > 0:
-        await query.edit_message_text(f"⏳ Queued, position #{queue_size + 1}…")
+    is_busy = _worker_busy or queue_size > 0
+    if is_busy:
+        position = queue_size + (1 if _worker_busy else 0) + 1
+        await query.edit_message_text(f"⏳ Queued, position #{position}…")
     else:
         await query.edit_message_text("⏳ Working on it...")
 
