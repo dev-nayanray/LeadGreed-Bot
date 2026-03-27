@@ -2568,51 +2568,49 @@ async def action_add_affiliate_revenue_grouped(affiliate_id: str, countries: lis
             val_before = await search_input.input_value()
             log.info(f"Search input value before fill: '{val_before}'")
 
-            await search_input.evaluate(f"""el => {{
+            await search_input.evaluate("""el => {
                 el.value = '';
-                el.dispatchEvent(new Event('input', {{bubbles:true}}));
-                el.dispatchEvent(new Event('change', {{bubbles:true}}));
-            }}""")
-            await page.wait_for_timeout(300)
-            await search_input.focus()
-            for char in country:
-                await page.keyboard.press(char)
-                await page.wait_for_timeout(50)
+                el.dispatchEvent(new Event('input', {bubbles:true}));
+                el.dispatchEvent(new Event('change', {bubbles:true}));
+            }""")
+            await page.wait_for_timeout(400)
+
+            # Переполучаем — Vue мог перерисовать
+            search_input = await page.query_selector("input[id*='search-input']")
+            if not search_input:
+                search_input = await page.query_selector("input[id*='search'], .bg-white input[type='text']")
+            if not search_input:
+                log.warning(f"Search input disappeared after clear for {country}")
+                continue
+
+            await search_input.click()
+            await page.wait_for_timeout(100)
+            await search_input.type(country, delay=60)
             await page.wait_for_timeout(400)
 
             for _ in range(15):
                 await page.wait_for_timeout(200)
-                cnt = await page.evaluate("""() => {
-                    const body = document.querySelector('.dropdown-content-body, .dropdown-scrollable, [class*="dropdown-content-body"], [class*="scrollable"]');
-                    if (body) return body.querySelectorAll('li').length;
-                    return Array.from(document.querySelectorAll('li.dropdown-item')).filter(li => !li.querySelector('[class*="deselect"], .times')).length;
-                }""")
+                cnt = await page.evaluate("() => document.querySelectorAll('li.dropdown-item').length")
                 if cnt < 15:
                     break
             log.info(f"After fill '{country}': items = {cnt}")
 
-            items_in_body = await page.evaluate("""(countryName) => {
-                const body = document.querySelector('.dropdown-content-body, .dropdown-scrollable, [class*="dropdown-content-body"], [class*="scrollable"]');
-                const container = body || document;
-                const items = container.querySelectorAll('li');
-                for (const item of items) {
-                    const txt = item.innerText.trim();
-                    if (txt.toLowerCase().includes(countryName.toLowerCase())) {
-                        item.click();
-                        return 'clicked:' + txt;
-                    }
-                }
-                const allTxts = Array.from(container.querySelectorAll('li')).map(i => i.innerText.trim()).slice(0, 5);
-                return 'not_found:' + allTxts.join('|');
-            }""", country)
+            items = await page.query_selector_all("li.dropdown-item, .dropdown-item")
+            clicked = False
+            for item in items:
+                txt = (await item.inner_text()).strip()
+                if country.lower() in txt.lower():
+                    await item.click()
+                    clicked = True
+                    log.info(f"Clicked: '{txt}'")
+                    break
 
-            log.info(f"Body click result: {items_in_body}")
-            if items_in_body and items_in_body.startswith('clicked:'):
+            if clicked:
                 selected.append(country)
                 log.info(f"Selected country: {country}")
                 await page.wait_for_timeout(500)
             else:
-                log.warning(f"Country not found: {country}. Result: {items_in_body}")
+                log.warning(f"Country not found: {country}. Items: {[await i.inner_text() for i in items]}")
 
         if not selected:
             await _close_modal(page)
@@ -2773,62 +2771,51 @@ async def action_add_revenue_grouped(broker_id: str, countries: list, amount: st
             val_before = await search_input.input_value()
             log.info(f"Search input value before fill: '{val_before}'")
 
-            # fill() не триггерит Vue — используем evaluate с dispatchEvent
-            await search_input.evaluate(f"""el => {{
+            # Очищаем через JS
+            await search_input.evaluate("""el => {
                 el.value = '';
-                el.dispatchEvent(new Event('input', {{bubbles:true}}));
-                el.dispatchEvent(new Event('change', {{bubbles:true}}));
-            }}""")
-            await page.wait_for_timeout(300)
-            # Вводим страну посимвольно — каждый символ триггерит Vue
-            await search_input.focus()
-            for char in country:
-                await page.keyboard.press(char)
-                await page.wait_for_timeout(50)
+                el.dispatchEvent(new Event('input', {bubbles:true}));
+                el.dispatchEvent(new Event('change', {bubbles:true}));
+            }""")
             await page.wait_for_timeout(400)
 
-            # Ждём фильтрации — items в body дропдауна (не selected-теги)
+            # Переполучаем search_input — Vue мог перерисовать элемент
+            search_input = await page.query_selector("input[id*='search-input']")
+            if not search_input:
+                search_input = await page.query_selector("input[id*='search'], .bg-white input[type='text']")
+            if not search_input:
+                log.warning(f"Search input disappeared after clear for {country}")
+                continue
+
+            # Вводим страну через type() — надёжно триггерит Vue
+            await search_input.click()
+            await page.wait_for_timeout(100)
+            await search_input.type(country, delay=60)
+            await page.wait_for_timeout(400)
+
+            # Ждём фильтрации
             for _ in range(15):
                 await page.wait_for_timeout(200)
-                cnt = await page.evaluate("""() => {
-                    // Ищем items в scrollable body (не в selected-tags области)
-                    const body = document.querySelector('.dropdown-content-body, .dropdown-scrollable, [class*="dropdown-content-body"], [class*="scrollable"]');
-                    if (body) return body.querySelectorAll('li').length;
-                    // Fallback: все li.dropdown-item которые не имеют × кнопки (не теги)
-                    return Array.from(document.querySelectorAll('li.dropdown-item')).filter(li => !li.querySelector('[class*="deselect"], .times, [aria-label*="remove"]')).length;
-                }""")
+                cnt = await page.evaluate("() => document.querySelectorAll('li.dropdown-item').length")
                 if cnt < 15:
                     break
-            log.info(f"After fill '{country}': dropdown body items = {cnt}")
+            log.info(f"After fill '{country}': dropdown items = {cnt}")
 
-            # Кликаем только на items из body, не на selected-теги
+            items = await page.query_selector_all("li.dropdown-item")
             clicked = False
-            all_texts = []
-            items_in_body = await page.evaluate("""(countryName) => {
-                const body = document.querySelector('.dropdown-content-body, .dropdown-scrollable, [class*="dropdown-content-body"], [class*="scrollable"]');
-                const container = body || document;
-                const items = container.querySelectorAll('li');
-                for (const item of items) {
-                    const txt = item.innerText.trim();
-                    if (txt.toLowerCase().includes(countryName.toLowerCase())) {
-                        item.click();
-                        return 'clicked:' + txt;
-                    }
-                }
-                const allTxts = Array.from(container.querySelectorAll('li')).map(i => i.innerText.trim()).slice(0, 5);
-                return 'not_found:' + allTxts.join('|');
-            }""", country)
-            
-            log.info(f"Body click result: {items_in_body}")
-            if items_in_body and items_in_body.startswith('clicked:'):
-                clicked = True
-
-            if clicked:
+            for item in items:
+                txt = (await item.inner_text()).strip()
+                if country.lower() in txt.lower():
+                    await item.click()
+                    clicked = True
+                    log.info(f"Clicked: '{txt}'")
+                    break
+            if not clicked:
+                log.warning(f"Country not found. Items: {[await i.inner_text() for i in items]}")
+            else:
                 selected.append(country)
                 log.info(f"Selected country for grouped revenue: {country}")
                 await page.wait_for_timeout(500)
-            else:
-                log.warning(f"Country not found in dropdown: {country}. Result: {items_in_body}")
 
         if not selected:
             await _close_modal(page)
