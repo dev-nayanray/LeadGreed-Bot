@@ -153,6 +153,9 @@ SYSTEM_PROMPT = """
 - Если не указана страна — countries: ["all"]
 - no_traffic по умолчанию true
 - Названия стран могут быть написаны с опечатками, на русском, или как ISO код (2 буквы). Всегда переводи в английское полное название.
+- Региональные алиасы — заменяй на список стран:
+  • "nordics" / "nordic" / "нордикс" → Ireland, Norway, Belgium, Denmark, Sweden, Finland
+  • Пример: "167 nordics price" → countries: ["Ireland", "Norway", "Belgium", "Denmark", "Sweden", "Finland"]
 - ВАЖНО: Никогда не склеивай имя брокера/аффилиата и страну в одно поле. ISO коды (DE, FR, ES, HR, ID, NL, CZ...) и названия стран (германия, испания...) — это ВСЕГДА countries, а не часть broker_ids. Даже если ISO код стоит СРАЗУ после имени брокера без разделителя.
 - ВАЖНО: Если в сообщении указан числовой ID брокера (например "2251 - Fugazi CH - CRG"), ВСЕГДА используй числовой ID в broker_ids: ["2251"]. Числовой ID надёжнее имени. Форматы: "2251 - Fugazi", "2251-Fugazi", "#2251", "ID 2251". В multi_broker_task тоже используй числовой ID в broker_id если он указан.
   Примеры:
@@ -215,9 +218,11 @@ SYSTEM_PROMPT = """
   • "close weekend" → days_to_close: ["Saturday","Sunday"]
   Примеры: "Axia close AR BR CL" → days_to_close: ["Monday","Tuesday","Wednesday","Thursday","Friday"] (все рабочие)
 - ВАЖНО: Правило различения брокера и аффилиата при запросе прайса:
-  • Просто число + страны + "прайс/price" → ЭТО АФФИЛИАТ (get_affiliate_revenue)
-    Примеры: "28 прайс испания", "159 DE price", "28 франция прайс"
-  • Имя (текст) + страны + "прайс/price" → ЭТО БРОКЕР (get_broker_revenue)
+  • Просто число + страны + "прайс/price/payout/выплата" → ЭТО АФФИЛИАТ (get_affiliate_revenue)
+    Примеры: "28 прайс испания", "159 DE price", "28 франция прайс", "what payout we have in nordics 167"
+  • Число может стоять В ЛЮБОМ МЕСТЕ фразы — до или после стран/ключевого слова
+    Примеры: "167 nordics price", "nordics 167 price", "what payout in nordics 167" — всё это get_affiliate_revenue, affiliate_id: "167"
+  • Имя (текст) + страны + "прайс/price/payout" → ЭТО БРОКЕР (get_broker_revenue)
     Примеры: "Nexus DE price", "финтрикс франция прайс", "Marsi прайс ES"
   • Явное указание "брокер/broker" или "афф/aff" → следуй указанию
     Примеры: "какой прайс у брокера 32", "прайс аффа 159"
@@ -339,7 +344,23 @@ SYSTEM_PROMPT = """
     159
     MX 650
     CO 700
-  В любом случае: если первая строка начинается с числа и не содержит часов (HH:MM) — это add_affiliate_revenue.
+  В любом случае: если первая строка начинается с числа и не содержит часов (HH:MM) — нужно определить, брокер это или аффилиат:
+
+  Признаки что это БРОКЕР (используй add_revenue):
+  • Формат "ЧИСЛО - ИмяБрокера" (число + дефис + текст с именем бренда): "3422 - Naga Joshua", "2251 - Fugazi CH"
+  • Число из 4+ цифр (у нас нет аффилиатов с 4-значным ID — самый большой афф ~233)
+  • После числа есть имя/название бренда (слова которые не являются ISO кодами стран)
+  В этом случае: broker_id = это число, а число на следующей строке (если есть) = affiliate_id параметр
+
+  Признаки что это АФФИЛИАТ (используй add_affiliate_revenue):
+  • Просто число без имени и без дефиса: "159", "71", "28"
+  • Число из 1-3 цифр стоит одно на строке
+
+  Примеры:
+  • "3422 - Naga Joshua\n71 BR 800" → broker_id: "3422", country: "Brazil", amount: 800, affiliate_id: "71" (add_revenue)
+  • "2251 - Fugazi CH\n122 DE 1600 16%" → broker_id: "2251", country: "Germany", amount: 1600, affiliate_id: "122" (add_revenue)
+  • "71\nBR 800" → affiliate_id: "71", country: "Brazil", amount: 800 (add_affiliate_revenue)
+  • "159\nFR 1000\nES 1100" → affiliate_id: "159" (add_affiliate_revenue)
   Одна сумма на несколько стран → country_revenues с одинаковым amount для каждой страны.
   → {"action": "add_affiliate_revenue", "affiliate_id": "159", "broker_ids": ["159"],
      "country_revenues": [{"country": "Colombia", "amount": 650}, {"country": "Chile", "amount": 650}]}
@@ -4259,7 +4280,8 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                     existing_countries = []
                     try:
                         page = await get_page()
-                        broker_base = await find_and_open_broker(page, str(broker_id))
+                        first_country = next((ch.get("country") for ch in country_hours_list if ch.get("country")), None)
+                        broker_base = await find_and_open_broker(page, str(broker_id), country_hint=first_country)
                         if broker_base:
                             oh_url = f"{CRM_URL.rstrip('/')}{broker_base}/opening_hours"
                             await page.goto(oh_url, wait_until="domcontentloaded", timeout=60000)
