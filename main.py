@@ -10,7 +10,6 @@ import datetime
 import json
 import logging
 import re
-import signal
 from typing import Optional
 
 import anthropic
@@ -649,6 +648,7 @@ CRM работает в GMT+2. Если в сообщении указан др�
 В этом случае:
 - Используй оригинальное сообщение для КОНТЕКСТА (имя брокера, список стран, часы)
 - Используй новую команду как ДЕЙСТВИЕ (что нужно сделать)
+- ВАЖНО: "today"/"tomorrow"/"yesterday" в оригинальном сообщении могут быть УСТАРЕВШИМИ (сообщение могло быть написано вчера). Если новая команда НЕ содержит "tomorrow"/"today" — считай что действие нужно выполнить СЕГОДНЯ (requested_day = сегодняшний день). "today"/"tomorrow" из reply-контекста ИГНОРИРУЙ.
 Примеры:
   [Ответ на:] "Nexus Schedule GMT+3 ... FR desk 14:00-20:00 ... GEO: FR ..."
   [Команда:] "FR with Nexus is off this weekend pls"
@@ -1572,12 +1572,6 @@ async def action_add_country_hours_multi(broker_id: str, country: str,
         if not modal:
             return "❌ Modal closed after country selection."
 
-    # Собираем все дни со всех групп
-    all_days_in_groups = set()
-    for g in schedule_groups:
-        for d in g.get("days", []):
-            all_days_in_groups.add(d.lower())
-
     all_days = ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"]
 
     # Строим карту: день → (start, end)
@@ -1941,8 +1935,6 @@ async def action_add_country_hours(broker_id: str, country: str, start: str, end
         save_btn = await page.wait_for_selector("text=SAVE OPENING HOURS", timeout=3000)
         await save_btn.click()
         await page.wait_for_timeout(700)
-        if is_overnight:
-            return f"✅ Hours added for {country}: {start}–{end}"
         return f"✅ Hours added for {country}: {start}–{end}"
     except Exception:
         return "⚠️ Save button not found. Data may not have been saved."
@@ -1996,7 +1988,7 @@ async def action_get_broker_revenue(broker_id: str, countries: list) -> str:
         if found:
             results.append(f"✅ {found['country']}: {found['amount']}")
         else:
-            results.append(f"❌ {country}: прайс not found")
+            results.append(f"❌ {country}: price not found")
 
     return "\n".join(results)
 
@@ -2182,7 +2174,7 @@ async def action_get_affiliate_revenue(affiliate_id: str, countries: list) -> st
         if found:
             results.append(f"✅ {found['country']}: {found['amount']}")
         else:
-            results.append(f"❌ {country}: прайс not found")
+            results.append(f"❌ {country}: price not found")
 
     return "\n".join(results)
 
@@ -2529,7 +2521,7 @@ async def action_add_revenue(broker_id: str, country: str, amount: str, affiliat
                     break
             log.info(f"Searched for: '{country}', elements: {items_count}")
         else:
-            log.info("Поле поиска страны not foundо!")
+            log.info("Country search field not found!")
 
         try:
             await page.wait_for_selector("li.dropdown-item", timeout=5000)
@@ -2757,7 +2749,7 @@ async def action_close_days(broker_id: str, country: str, days_to_close: list, c
                     break
 
             if not target:
-                results.append(f"⚠️ {c_name}: карандаш not found после обновления.")
+                results.append(f"⚠️ {c_name}: pencil not found after DOM update.")
                 continue
 
             msg = await _close_days_for_pencil(page, target, c_name, days_to_close)
@@ -4372,8 +4364,6 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                 )
                                 sub_results.append(sub_msg)
                         msg = "\n".join(sub_results)
-                        sub_results.append(sub_msg)
-                    msg = "\n".join(sub_results)
             elif a == "add_revenue":
                 country_revenues = action.get("country_revenues", [])
                 if not country_revenues:
@@ -4445,11 +4435,9 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                     page = await get_page()
                     caps_broker_base = await find_and_open_broker(page, str(broker_id))
                     for cc in cc_list:
-                        delta_val = cc.get("delta")
-                        cap_val   = cc.get("cap")
                         delta_val  = cc.get("delta")
                         cap_val    = cc.get("cap")
-                        aff_id_val   = cc.get("affiliate_id")
+                        aff_id_val = cc.get("affiliate_id")
                         delete_first = cc.get("_delete_first", False)
                         # affiliate_id может быть строкой, списком или None
                         if isinstance(aff_id_val, list):
