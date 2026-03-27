@@ -2539,22 +2539,24 @@ async def action_add_affiliate_revenue_grouped(affiliate_id: str, countries: lis
             await dropdown_toggle.click()
             await page.wait_for_timeout(600)
 
-        # Выбираем каждую страну — ждём пока input станет видимым после Vue ре-рендера
+        # Выбираем каждую страну — перед каждой проверяем открыт ли дропдаун
         selected = []
         for country in new_countries:
-            search_input = None
-            for attempt in range(10):
-                candidates = await page.query_selector_all("input[id*='search-input'], input[id*='search']")
-                for inp in candidates:
-                    if await inp.is_visible():
-                        search_input = inp
-                        break
-                if search_input:
-                    break
-                await page.wait_for_timeout(300)
+            items_count = await page.evaluate("() => document.querySelectorAll('li.dropdown-item, .dropdown-item').length")
+            if items_count == 0:
+                log.info(f"Reopening dropdown before {country}")
+                dropdown_toggle = await modal.query_selector(
+                    ".smart__dropdown, [class*='smart__dropdown'], .smart__dropdown__input__element"
+                )
+                if dropdown_toggle:
+                    await dropdown_toggle.click()
+                    await page.wait_for_timeout(600)
 
+            search_input = await page.query_selector("input[id*='search-input']")
             if not search_input:
-                log.warning(f"Search input not visible for {country} after waiting")
+                search_input = await page.query_selector("input[id*='search'], .bg-white input[type='text']")
+            if not search_input:
+                log.warning(f"Search input not found for {country}")
                 continue
 
             await search_input.evaluate("el => { el.value = ''; el.dispatchEvent(new Event('input', {bubbles:true})); }")
@@ -2567,7 +2569,6 @@ async def action_add_affiliate_revenue_grouped(affiliate_id: str, countries: lis
                 if cnt < 15:
                     break
 
-            # Используем реальный Playwright click — JS click закрывает Vue дропдаун
             items = await page.query_selector_all("li.dropdown-item, .dropdown-item")
             clicked = False
             for item in items:
@@ -2580,7 +2581,7 @@ async def action_add_affiliate_revenue_grouped(affiliate_id: str, countries: lis
             if clicked:
                 selected.append(country)
                 log.info(f"Selected country: {country}")
-                await page.wait_for_timeout(500)
+                await page.wait_for_timeout(400)
             else:
                 log.warning(f"Country not found in dropdown: {country}")
 
@@ -2713,26 +2714,28 @@ async def action_add_revenue_grouped(broker_id: str, countries: list, amount: st
             await dropdown_toggle.click()
             await page.wait_for_timeout(600)
 
-        # Выбираем страны по очереди — дропдаун мультиселект, остаётся открытым
+        # Выбираем страны по очереди — перед каждой проверяем что дропдаун открыт
         selected = []
         for country in new_countries:
-            # Ждём пока поле поиска станет видимым (Vue может перерисовывать после выбора)
-            search_input = None
-            for attempt in range(10):
-                candidates = await page.query_selector_all("input[id*='search-input'], input[id*='search']")
-                for inp in candidates:
-                    if await inp.is_visible():
-                        search_input = inp
-                        break
-                if search_input:
-                    break
-                await page.wait_for_timeout(300)
+            # Проверяем открыт ли дропдаун по наличию li.dropdown-item
+            items_count = await page.evaluate("() => document.querySelectorAll('li.dropdown-item').length")
+            if items_count == 0:
+                # Дропдаун закрылся — переоткрываем
+                log.info(f"Reopening dropdown before {country}")
+                dropdown_toggle = await modal.query_selector(".smart__dropdown, [class*='smart__dropdown']")
+                if dropdown_toggle:
+                    await dropdown_toggle.click()
+                    await page.wait_for_timeout(600)
 
+            # Находим поле поиска
+            search_input = await page.query_selector("input[id*='search-input']")
             if not search_input:
-                log.warning(f"Search input not visible for {country} after waiting")
+                search_input = await page.query_selector("input[id*='search'], .bg-white input[type='text']")
+            if not search_input:
+                log.warning(f"Search input not found for {country}")
                 continue
 
-            # Очищаем через JS и вводим новую страну
+            # Очищаем через JS и вводим страну
             await search_input.evaluate("el => { el.value = ''; el.dispatchEvent(new Event('input', {bubbles:true})); }")
             await page.wait_for_timeout(200)
             await search_input.type(country, delay=60)
@@ -2744,7 +2747,7 @@ async def action_add_revenue_grouped(broker_id: str, countries: list, amount: st
                 if cnt < 15:
                     break
 
-            # Используем реальный Playwright click — JS click закрывает Vue дропдаун
+            # Реальный Playwright click на нужную страну
             items = await page.query_selector_all("li.dropdown-item")
             clicked = False
             for item in items:
@@ -2757,7 +2760,7 @@ async def action_add_revenue_grouped(broker_id: str, countries: list, amount: st
             if clicked:
                 selected.append(country)
                 log.info(f"Selected country for grouped revenue: {country}")
-                await page.wait_for_timeout(500)  # ждём Vue ре-рендер
+                await page.wait_for_timeout(400)
             else:
                 log.warning(f"Country not found in dropdown: {country}")
 
