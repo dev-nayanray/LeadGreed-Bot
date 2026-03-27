@@ -2537,44 +2537,30 @@ async def action_add_affiliate_revenue_grouped(affiliate_id: str, countries: lis
         )
         if dropdown_toggle:
             await dropdown_toggle.click()
-            await page.wait_for_timeout(400)
+            await page.wait_for_timeout(600)
 
-        # Выбираем каждую страну по очереди — переоткрываем дропдаун если закрылся
+        # Выбираем каждую страну — ждём пока input станет видимым после Vue ре-рендера
         selected = []
         for country in new_countries:
-            # Проверяем что поле поиска видимо — если нет, переоткрываем дропдаун
             search_input = None
-            for attempt in range(3):
+            for attempt in range(10):
                 candidates = await page.query_selector_all("input[id*='search-input'], input[id*='search']")
                 for inp in candidates:
                     if await inp.is_visible():
                         search_input = inp
                         break
-                if not search_input:
-                    search_input = await page.query_selector(".bg-white input[type='text'], [class*='dropdown__menu'] input")
-                if search_input and await search_input.is_visible():
+                if search_input:
                     break
-                log.info(f"Dropdown closed before {country}, reopening...")
-                dropdown_toggle = await modal.query_selector(
-                    ".smart__dropdown, [class*='smart__dropdown'], .smart__dropdown__input__element"
-                )
-                if dropdown_toggle:
-                    await dropdown_toggle.click()
-                    await page.wait_for_timeout(500)
-                search_input = None
+                await page.wait_for_timeout(300)
 
             if not search_input:
-                log.warning(f"Search input not found for {country} after 3 attempts")
+                log.warning(f"Search input not visible for {country} after waiting")
                 continue
 
-            # Очищаем поле через fill("") — надёжнее чем keyboard shortcuts
-            await search_input.click()
-            await page.wait_for_timeout(100)
-            await search_input.fill("")
+            await search_input.evaluate("el => { el.value = ''; el.dispatchEvent(new Event('input', {bubbles:true})); }")
             await page.wait_for_timeout(200)
             await search_input.type(country, delay=60)
 
-            # Ждём пока список отфильтруется
             for _ in range(20):
                 await page.wait_for_timeout(200)
                 cnt = await page.evaluate("() => document.querySelectorAll('li.dropdown-item, .dropdown-item').length")
@@ -2595,9 +2581,9 @@ async def action_add_affiliate_revenue_grouped(affiliate_id: str, countries: lis
             if clicked:
                 selected.append(country)
                 log.info(f"Selected country: {country}")
+                await page.wait_for_timeout(500)
             else:
                 log.warning(f"Country not found in dropdown: {country}")
-            await page.wait_for_timeout(400)
 
         if not selected:
             await _close_modal(page)
@@ -2726,43 +2712,33 @@ async def action_add_revenue_grouped(broker_id: str, countries: list, amount: st
         dropdown_toggle = await modal.query_selector(".smart__dropdown, [class*='smart__dropdown']")
         if dropdown_toggle:
             await dropdown_toggle.click()
-            await page.wait_for_timeout(400)
+            await page.wait_for_timeout(600)
 
-        # Выбираем страны по очереди (мультиселект — дропдаун должен оставаться открытым)
+        # Выбираем страны по очереди — дропдаун мультиселект, остаётся открытым
         selected = []
         for country in new_countries:
-            # Проверяем что поле поиска видимо — если нет, переоткрываем дропдаун
+            # Ждём пока поле поиска станет видимым (Vue может перерисовывать после выбора)
             search_input = None
-            for attempt in range(3):
+            for attempt in range(10):
                 candidates = await page.query_selector_all("input[id*='search-input'], input[id*='search']")
                 for inp in candidates:
                     if await inp.is_visible():
                         search_input = inp
                         break
-                if not search_input:
-                    search_input = await page.query_selector(".bg-white input[type='text'], [class*='dropdown__menu'] input")
-                if search_input and await search_input.is_visible():
+                if search_input:
                     break
-                # Дропдаун закрылся — переоткрываем
-                log.info(f"Dropdown closed before {country}, reopening...")
-                dropdown_toggle = await modal.query_selector(".smart__dropdown, [class*='smart__dropdown']")
-                if dropdown_toggle:
-                    await dropdown_toggle.click()
-                    await page.wait_for_timeout(500)
-                search_input = None
+                await page.wait_for_timeout(300)
 
             if not search_input:
-                log.warning(f"Search input not found for {country} after 3 attempts")
+                log.warning(f"Search input not visible for {country} after waiting")
                 continue
 
-            # Очищаем поле через fill("") — надёжнее чем keyboard
-            await search_input.click()
-            await page.wait_for_timeout(100)
-            await search_input.fill("")
+            # Очищаем через JS и вводим новую страну
+            await search_input.evaluate("el => { el.value = ''; el.dispatchEvent(new Event('input', {bubbles:true})); }")
             await page.wait_for_timeout(200)
             await search_input.type(country, delay=60)
 
-            # Ждём пока список отфильтруется
+            # Ждём фильтрации
             for _ in range(20):
                 await page.wait_for_timeout(200)
                 cnt = await page.evaluate("() => document.querySelectorAll('li.dropdown-item').length")
@@ -2783,9 +2759,9 @@ async def action_add_revenue_grouped(broker_id: str, countries: list, amount: st
             if clicked:
                 selected.append(country)
                 log.info(f"Selected country for grouped revenue: {country}")
+                await page.wait_for_timeout(500)  # ждём Vue ре-рендер
             else:
                 log.warning(f"Country not found in dropdown: {country}")
-            await page.wait_for_timeout(400)
 
         if not selected:
             await _close_modal(page)
