@@ -2769,20 +2769,21 @@ async def action_add_revenue_grouped(broker_id: str, countries: list, amount: st
             # Кликаем на нужную страну
             items = await page.query_selector_all("li.dropdown-item")
             clicked = False
+            all_texts = []
             for item in items:
                 txt = (await item.inner_text()).strip()
+                all_texts.append(txt)
                 if country.lower() in txt.lower():
                     await item.click()
                     clicked = True
                     log.info(f"Clicked: '{txt}'")
                     break
-
-            if clicked:
+            if not clicked:
+                log.warning(f"Country not found in dropdown: {country}. Items were: {all_texts}")
+            else:
                 selected.append(country)
                 log.info(f"Selected country for grouped revenue: {country}")
                 await page.wait_for_timeout(500)
-            else:
-                log.warning(f"Country not found in dropdown: {country}")
 
         if not selected:
             await _close_modal(page)
