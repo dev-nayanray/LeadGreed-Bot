@@ -2582,27 +2582,37 @@ async def action_add_affiliate_revenue_grouped(affiliate_id: str, countries: lis
 
             for _ in range(15):
                 await page.wait_for_timeout(200)
-                cnt = await page.evaluate("() => document.querySelectorAll('li.dropdown-item, .dropdown-item').length")
+                cnt = await page.evaluate("""() => {
+                    const body = document.querySelector('.dropdown-content-body, .dropdown-scrollable, [class*="dropdown-content-body"], [class*="scrollable"]');
+                    if (body) return body.querySelectorAll('li').length;
+                    return Array.from(document.querySelectorAll('li.dropdown-item')).filter(li => !li.querySelector('[class*="deselect"], .times')).length;
+                }""")
                 if cnt < 15:
                     break
             log.info(f"After fill '{country}': items = {cnt}")
 
-            items = await page.query_selector_all("li.dropdown-item, .dropdown-item")
-            clicked = False
-            for item in items:
-                txt = (await item.inner_text()).strip()
-                if country.lower() in txt.lower():
-                    await item.click()
-                    clicked = True
-                    log.info(f"Clicked: '{txt}'")
-                    break
+            items_in_body = await page.evaluate("""(countryName) => {
+                const body = document.querySelector('.dropdown-content-body, .dropdown-scrollable, [class*="dropdown-content-body"], [class*="scrollable"]');
+                const container = body || document;
+                const items = container.querySelectorAll('li');
+                for (const item of items) {
+                    const txt = item.innerText.trim();
+                    if (txt.toLowerCase().includes(countryName.toLowerCase())) {
+                        item.click();
+                        return 'clicked:' + txt;
+                    }
+                }
+                const allTxts = Array.from(container.querySelectorAll('li')).map(i => i.innerText.trim()).slice(0, 5);
+                return 'not_found:' + allTxts.join('|');
+            }""", country)
 
-            if clicked:
+            log.info(f"Body click result: {items_in_body}")
+            if items_in_body and items_in_body.startswith('clicked:'):
                 selected.append(country)
                 log.info(f"Selected country: {country}")
                 await page.wait_for_timeout(500)
             else:
-                log.warning(f"Country not found in dropdown: {country}")
+                log.warning(f"Country not found: {country}. Result: {items_in_body}")
 
         if not selected:
             await _close_modal(page)
@@ -2777,32 +2787,48 @@ async def action_add_revenue_grouped(broker_id: str, countries: list, amount: st
                 await page.wait_for_timeout(50)
             await page.wait_for_timeout(400)
 
-            # Ждём фильтрации
+            # Ждём фильтрации — items в body дропдауна (не selected-теги)
             for _ in range(15):
                 await page.wait_for_timeout(200)
-                cnt = await page.evaluate("() => document.querySelectorAll('li.dropdown-item').length")
+                cnt = await page.evaluate("""() => {
+                    // Ищем items в scrollable body (не в selected-tags области)
+                    const body = document.querySelector('.dropdown-content-body, .dropdown-scrollable, [class*="dropdown-content-body"], [class*="scrollable"]');
+                    if (body) return body.querySelectorAll('li').length;
+                    // Fallback: все li.dropdown-item которые не имеют × кнопки (не теги)
+                    return Array.from(document.querySelectorAll('li.dropdown-item')).filter(li => !li.querySelector('[class*="deselect"], .times, [aria-label*="remove"]')).length;
+                }""")
                 if cnt < 15:
                     break
-            log.info(f"After fill '{country}': dropdown items = {cnt}")
+            log.info(f"After fill '{country}': dropdown body items = {cnt}")
 
-            # Кликаем на нужную страну
-            items = await page.query_selector_all("li.dropdown-item")
+            # Кликаем только на items из body, не на selected-теги
             clicked = False
             all_texts = []
-            for item in items:
-                txt = (await item.inner_text()).strip()
-                all_texts.append(txt)
-                if country.lower() in txt.lower():
-                    await item.click()
-                    clicked = True
-                    log.info(f"Clicked: '{txt}'")
-                    break
-            if not clicked:
-                log.warning(f"Country not found in dropdown: {country}. Items were: {all_texts}")
-            else:
+            items_in_body = await page.evaluate("""(countryName) => {
+                const body = document.querySelector('.dropdown-content-body, .dropdown-scrollable, [class*="dropdown-content-body"], [class*="scrollable"]');
+                const container = body || document;
+                const items = container.querySelectorAll('li');
+                for (const item of items) {
+                    const txt = item.innerText.trim();
+                    if (txt.toLowerCase().includes(countryName.toLowerCase())) {
+                        item.click();
+                        return 'clicked:' + txt;
+                    }
+                }
+                const allTxts = Array.from(container.querySelectorAll('li')).map(i => i.innerText.trim()).slice(0, 5);
+                return 'not_found:' + allTxts.join('|');
+            }""", country)
+            
+            log.info(f"Body click result: {items_in_body}")
+            if items_in_body and items_in_body.startswith('clicked:'):
+                clicked = True
+
+            if clicked:
                 selected.append(country)
                 log.info(f"Selected country for grouped revenue: {country}")
                 await page.wait_for_timeout(500)
+            else:
+                log.warning(f"Country not found in dropdown: {country}. Result: {items_in_body}")
 
         if not selected:
             await _close_modal(page)
