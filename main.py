@@ -2658,29 +2658,60 @@ async def _close_days_for_pencil(page, pencil, country_name: str, days_to_close:
 
     days_lower = [d.lower() for d in days_to_close]
     checkboxes = await modal.query_selector_all("input[type='checkbox']")
-    closed = []
+    closed = []        # дни которые удалось закрыть (сняли галочку)
+    already_closed = []  # дни которые уже были закрыты
+    not_found = []     # дни которых не нашли в модалке вообще
+
+    found_days = set()
     for cb in checkboxes:
         label_text = await cb.evaluate("el => el.closest('label,tr,div')?.textContent?.toLowerCase() || ''")
         if "no traffic" in label_text:
             continue
         for day in days_lower:
             if day in label_text:
+                found_days.add(day)
                 if await cb.is_checked():
                     await cb.evaluate("el => el.click()")
                     await page.wait_for_timeout(100)
                     closed.append(day.capitalize())
+                else:
+                    already_closed.append(day.capitalize())
                 break
 
-    if not closed:
-        # Дни уже закрыты — просто закрываем модалку без сохранения
-        await _close_modal(page)
-        return f"⚠️ {country_name}: days {days_to_close} already closed or not found."
+    for day in days_lower:
+        if day not in found_days:
+            not_found.append(day.capitalize())
 
+    if not closed:
+        # Ничего не меняли — закрываем модалку без сохранения
+        await _close_modal(page)
+        parts = []
+        if already_closed:
+            # Если все запрошенные дни закрыты — компактно
+            if len(already_closed) == len(days_to_close):
+                parts.append("already closed")
+            else:
+                parts.append(f"already closed: {', '.join(already_closed)}")
+        if not_found:
+            parts.append(f"not found: {', '.join(not_found)}")
+        return f"⚠️ {country_name}: {' | '.join(parts)}."
+
+    # Есть что сохранять
     try:
         save_btn = await page.wait_for_selector("text=SAVE OPENING HOURS", timeout=3000)
         await save_btn.click()
         await page.wait_for_timeout(700)
-        return f"✅ {country_name}: days closed: {', '.join(closed)}."
+        # Формируем итоговое сообщение
+        parts = []
+        if len(closed) == len(days_to_close):
+            parts.append("all days closed")
+        else:
+            parts.append(f"closed: {', '.join(closed)}")
+        if already_closed:
+            parts.append(f"already closed: {', '.join(already_closed)}")
+        if not_found:
+            parts.append(f"not found: {', '.join(not_found)}")
+        return f"✅ {country_name}: {' | '.join(parts)}."
     except Exception:
         await _close_modal(page)
         return f"⚠️ {country_name}: Save button not found."
