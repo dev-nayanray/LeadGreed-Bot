@@ -244,12 +244,20 @@ SYSTEM_PROMPT = """
   "days_to_close" на верхнем уровне оставляй пустым.
 - ВАЖНО: close_days требует конкретную страну. Если страна не указана — ставь "country": "all" (закрыть все страны).
   "Legion DE pause" → country: "Germany". "Universo Friday off" → country: "all" (все страны).
+- ВАЖНО: Если в сообщении перечислены конкретные страны (ISO коды или названия) — закрывай ТОЛЬКО их, не все страны брокера!
+  "Nexus need to close Sat BE FI NL" → закрыть только Belgium, Finland, Netherlands на Saturday
+  "Nexus close BE FI" → закрыть только Belgium, Finland (не все страны Nexus!)
 - Для close_days: days_to_close = список дней которые нужно закрыть
   • "pause" / "paused" без дня → закрыть ТОЛЬКО сегодня
-  • "close" / "off" без конкретного дня → закрыть ВСЕ рабочие дни (Mon-Fri): days_to_close: ["Monday","Tuesday","Wednesday","Thursday","Friday"]
+  • "close" / "off" без конкретного дня И без перечня стран → закрыть ВСЕ рабочие дни (Mon-Fri): days_to_close: ["Monday","Tuesday","Wednesday","Thursday","Friday"]
+  • "close" с перечнем стран но без дня → закрыть только сегодня для этих стран
+  • "Sat" / "Saturday" / "суббота" → days_to_close: ["Saturday"]
+  • "Sun" / "Sunday" / "воскресенье" → days_to_close: ["Sunday"]
   • "Friday off" → только пятницу: days_to_close: ["Friday"]
   • "close weekend" → days_to_close: ["Saturday","Sunday"]
-  Примеры: "Axia close AR BR CL" → days_to_close: ["Monday","Tuesday","Wednesday","Thursday","Friday"] (все рабочие)
+  Примеры:
+  "Axia close AR BR CL" → days_to_close: ["Monday","Tuesday","Wednesday","Thursday","Friday"] (нет дня = все рабочие)
+  "Nexus need to close Sat BE FI NL NZ AU DK NO SE IE" → broker: Nexus, days_to_close: ["Saturday"], countries: [Belgium, Finland, Netherlands, New Zealand, Australia, Denmark, Norway, Sweden, Ireland]
 - ВАЖНО: Правило различения брокера и аффилиата при запросе прайса:
   • Просто число + страны + "прайс/price/payout/выплата" → ЭТО АФФИЛИАТ (get_affiliate_revenue)
     Примеры: "28 прайс испания", "159 DE price", "28 франция прайс", "what payout we have in nordics 167"
