@@ -3421,21 +3421,23 @@ async def action_add_affiliate_mapping(broker_id: str, affiliate_id: str,
     # ── 2. Выбираем страну (если указана) ─────
     if country and country.lower() != "all":
         try:
-            await page.wait_for_timeout(400)
-            # После выбора аффа модалка перерисовалась — переполучаем
-            modal = await page.query_selector(".modal-body, [role='dialog']")
-
-            # Находим все smart__dropdown в модалке — Country идёт вторым
-            dropdowns = await modal.query_selector_all(
-                ".smart__dropdown__input__element, [class*='smart__dropdown__input__element']"
-            )
-            country_toggle = dropdowns[1] if len(dropdowns) > 1 else None
-            if not country_toggle:
-                # Fallback — ищем по тексту placeholder
-                country_toggle = await modal.query_selector("[placeholder*='country' i], [class*='smart__dropdown']")
-            if country_toggle:
-                await country_toggle.click()
-                await page.wait_for_timeout(600)
+            await page.wait_for_timeout(500)
+            # Находим Country дропдаун по его лейблу
+            country_clicked = await page.evaluate("""() => {
+                const labels = document.querySelectorAll('.modal label, [role=dialog] label');
+                for (const lbl of labels) {
+                    if (lbl.innerText.trim().toLowerCase() === 'country') {
+                        const row = lbl.closest('.form-group, .row, fieldset') || lbl.parentElement;
+                        const inner = row?.querySelector('.smart__dropdown__input__element') ||
+                                      row?.querySelector('[class*="cursor-pointer"]') ||
+                                      row?.querySelector('[class*="smart__dropdown"]');
+                        if (inner) { inner.click(); return true; }
+                    }
+                }
+                return false;
+            }""")
+            log.info(f"Country dropdown clicked: {country_clicked}")
+            await page.wait_for_timeout(600)
 
             country_search = await page.wait_for_selector(
                 "input[id*='search-input'], input[id*='search']",
@@ -3452,6 +3454,8 @@ async def action_add_affiliate_mapping(broker_id: str, affiliate_id: str,
                     log.info(f"Selected country: {txt}")
                     await page.wait_for_timeout(400)
                     break
+            else:
+                log.warning(f"Country '{country}' not found in dropdown")
         except Exception as e:
             log.warning(f"Could not select country '{country}': {e}")
 
