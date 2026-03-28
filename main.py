@@ -3542,6 +3542,27 @@ async def action_add_affiliate_mapping(broker_id: str, affiliate_id: str,
         await save_btn.click()
         await page.wait_for_timeout(1200)
 
+        # Проверяем нет ли ошибки "record already exists"
+        error_msg = await page.evaluate("""() => {
+            const alerts = document.querySelectorAll('.noty_body, .alert, .toast, [class*="alert"], [class*="toast"], [class*="noty"]');
+            for (const el of alerts) {
+                const txt = el.innerText?.trim() || '';
+                if (txt.toLowerCase().includes('already exist') || txt.toLowerCase().includes('already exists')) {
+                    return 'already_exists:' + txt;
+                }
+                if (txt.toLowerCase().includes('not being sent') || txt.toLowerCase().includes('mapped source')) {
+                    return 'not_sent:' + txt;
+                }
+            }
+            return null;
+        }""")
+        if error_msg:
+            await _close_modal(page)
+            if error_msg.startswith('already_exists:'):
+                return f"⚠️ Record already exists (aff {affiliate_id}{f' / {country}' if country else ''} already mapped)"
+            elif error_msg.startswith('not_sent:'):
+                return f"⚠️ Aff ID is not being sent to this broker"
+
         country_str = f" / {country}" if country and country.lower() != "all" else ""
         log.info(f"Mapping saved: aff {affiliate_id} → {override_code} for broker {broker_id}{country_str}")
         result = f"✅ Mapped aff {affiliate_id}{country_str}: override ID = {override_code}"
@@ -3719,13 +3740,6 @@ async def action_add_funnel_slug_override(broker_id: str, override_code: str,
             }}""", str(affiliate_id))
             await page.wait_for_timeout(900)
 
-            # Логируем что в списке
-            items_debug = await page.evaluate("""() => {
-                const items = document.querySelectorAll('li.dropdown-item, li.flex-fill');
-                return Array.from(items).slice(0, 5).map(i => i.innerText.trim());
-            }""")
-            log.info(f"Affiliate dropdown items: {items_debug}")
-
             # Кликаем через JS
             clicked_aff = await page.evaluate(f"""(affId) => {{
                 const items = document.querySelectorAll('li.dropdown-item, li.flex-fill');
@@ -3789,6 +3803,28 @@ async def action_add_funnel_slug_override(broker_id: str, override_code: str,
         )
         await save_btn.click()
         await page.wait_for_timeout(1200)
+
+        # Проверяем нет ли ошибки "record already exists"
+        error_msg = await page.evaluate("""() => {
+            const alerts = document.querySelectorAll('.noty_body, .alert, .toast, [class*="alert"], [class*="toast"], [class*="noty"]');
+            for (const el of alerts) {
+                const txt = el.innerText?.trim() || '';
+                if (txt.toLowerCase().includes('already exist') || txt.toLowerCase().includes('already exists')) {
+                    return 'already_exists:' + txt;
+                }
+                if (txt.toLowerCase().includes('not being sent') || txt.toLowerCase().includes('mapped source')) {
+                    return 'not_sent:' + txt;
+                }
+            }
+            return null;
+        }""")
+        if error_msg:
+            await _close_modal(page)
+            countries_str_err = ", ".join(countries) if countries else "all countries"
+            if error_msg.startswith('already_exists:'):
+                return f"⚠️ Record already exists ('{override_code}' for {countries_str_err} already set)"
+            elif error_msg.startswith('not_sent:'):
+                return f"⚠️ Aff ID is not being sent to this broker"
 
         countries_str = ", ".join(countries) if countries else "all countries"
         aff_str = f" / aff {affiliate_id}" if affiliate_id else ""
