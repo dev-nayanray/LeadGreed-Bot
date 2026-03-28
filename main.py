@@ -3675,6 +3675,9 @@ async def action_add_funnel_slug_override(broker_id: str, override_code: str,
     aff_selected = False
     if affiliate_id:
         try:
+            # Ждём дольше после закрытия country dropdown
+            await page.wait_for_timeout(800)
+
             # Открываем Affiliate дропдаун по лейблу через JS
             await page.evaluate("""() => {
                 const labels = document.querySelectorAll('.modal label, [role=dialog] label');
@@ -3689,9 +3692,19 @@ async def action_add_funnel_slug_override(broker_id: str, override_code: str,
                 }
                 return false;
             }""")
-            await page.wait_for_timeout(700)
+            await page.wait_for_timeout(800)
 
-            # Вводим ID через JS
+            # Вводим ID через JS — ищем только видимый input
+            await page.evaluate(f"""(affId) => {{
+                const inputs = document.querySelectorAll('input[id*="search-input"], input[id*="search"]');
+                for (const inp of inputs) {{
+                    if (inp.offsetParent !== null) {{
+                        inp.value = '';
+                        inp.dispatchEvent(new Event('input', {{bubbles: true}}));
+                    }}
+                }}
+            }}""", str(affiliate_id))
+            await page.wait_for_timeout(300)
             await page.evaluate(f"""(affId) => {{
                 const inputs = document.querySelectorAll('input[id*="search-input"], input[id*="search"]');
                 for (const inp of inputs) {{
@@ -3704,7 +3717,14 @@ async def action_add_funnel_slug_override(broker_id: str, override_code: str,
                 }}
                 return false;
             }}""", str(affiliate_id))
-            await page.wait_for_timeout(800)
+            await page.wait_for_timeout(900)
+
+            # Логируем что в списке
+            items_debug = await page.evaluate("""() => {
+                const items = document.querySelectorAll('li.dropdown-item, li.flex-fill');
+                return Array.from(items).slice(0, 5).map(i => i.innerText.trim());
+            }""")
+            log.info(f"Affiliate dropdown items: {items_debug}")
 
             # Кликаем через JS
             clicked_aff = await page.evaluate(f"""(affId) => {{
