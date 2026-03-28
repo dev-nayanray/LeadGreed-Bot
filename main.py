@@ -3365,31 +3365,49 @@ async def action_add_affiliate_mapping(broker_id: str, affiliate_id: str,
 
     # ── 1. Выбираем аффилиата ──────────────────
     try:
-        # Кликаем по fieldset Affiliate чтобы открыть дропдаун
-        aff_fieldset = await modal.query_selector("fieldset")
-        if aff_fieldset:
-            await aff_fieldset.click()
-            await page.wait_for_timeout(500)
+        # Кликаем по smart__dropdown__input__element первого поля (Affiliate)
+        aff_dropdown = await modal.query_selector(
+            ".smart__dropdown__input__element, .smart__dropdown, [class*='smart__dropdown']"
+        )
+        if aff_dropdown:
+            await aff_dropdown.click()
+            await page.wait_for_timeout(600)
 
         # Ищем поле поиска аффилиата
         search_input = await page.wait_for_selector(
             "input[id*='search-input'], input[id*='search']",
             timeout=4000
         )
-        await search_input.type(str(affiliate_id), delay=60)
+        await search_input.type(str(affiliate_id), delay=80)
         await page.wait_for_timeout(800)
 
-        # Кликаем на нужного аффилиата
-        items = await page.query_selector_all("li.dropdown-item, .dropdown-item, li.flex-fill")
+        # Ждём фильтрации
+        for _ in range(10):
+            await page.wait_for_timeout(200)
+            cnt = await page.evaluate("() => document.querySelectorAll('li.dropdown-item, li.flex-fill').length")
+            if 0 < cnt < 20:
+                break
+
+        # Кликаем на нужного аффилиата — ищем по ID в скобках или в тексте
+        items = await page.query_selector_all("li.dropdown-item, li.flex-fill")
         clicked_aff = False
         for item in items:
             txt = (await item.inner_text()).strip()
-            if str(affiliate_id) in txt:
+            if f"({affiliate_id})" in txt or txt.startswith(f"*{affiliate_id}") or txt.startswith(affiliate_id):
                 await item.click()
                 clicked_aff = True
                 log.info(f"Selected affiliate: {txt}")
                 await page.wait_for_timeout(400)
                 break
+
+        if not clicked_aff:
+            # Fallback — первый результат если только один
+            if len(items) == 1:
+                txt = (await items[0].inner_text()).strip()
+                await items[0].click()
+                clicked_aff = True
+                log.info(f"Selected affiliate (only result): {txt}")
+                await page.wait_for_timeout(400)
 
         if not clicked_aff:
             await _close_modal(page)
@@ -3403,12 +3421,21 @@ async def action_add_affiliate_mapping(broker_id: str, affiliate_id: str,
     # ── 2. Выбираем страну (если указана) ─────
     if country and country.lower() != "all":
         try:
-            # Находим Country fieldset (второй fieldset)
-            fieldsets = await modal.query_selector_all("fieldset")
-            country_fieldset = fieldsets[1] if len(fieldsets) > 1 else None
-            if country_fieldset:
-                await country_fieldset.click()
-                await page.wait_for_timeout(500)
+            await page.wait_for_timeout(400)
+            # После выбора аффа модалка перерисовалась — переполучаем
+            modal = await page.query_selector(".modal-body, [role='dialog']")
+
+            # Находим все smart__dropdown в модалке — Country идёт вторым
+            dropdowns = await modal.query_selector_all(
+                ".smart__dropdown__input__element, [class*='smart__dropdown__input__element']"
+            )
+            country_toggle = dropdowns[1] if len(dropdowns) > 1 else None
+            if not country_toggle:
+                # Fallback — ищем по тексту placeholder
+                country_toggle = await modal.query_selector("[placeholder*='country' i], [class*='smart__dropdown']")
+            if country_toggle:
+                await country_toggle.click()
+                await page.wait_for_timeout(600)
 
             country_search = await page.wait_for_selector(
                 "input[id*='search-input'], input[id*='search']",
@@ -3417,19 +3444,14 @@ async def action_add_affiliate_mapping(broker_id: str, affiliate_id: str,
             await country_search.type(country, delay=60)
             await page.wait_for_timeout(600)
 
-            items = await page.query_selector_all("li.dropdown-item, .dropdown-item, li.flex-fill")
-            clicked_country = False
+            items = await page.query_selector_all("li.dropdown-item, li.flex-fill")
             for item in items:
                 txt = (await item.inner_text()).strip()
                 if country.lower() in txt.lower():
                     await item.click()
-                    clicked_country = True
                     log.info(f"Selected country: {txt}")
                     await page.wait_for_timeout(400)
                     break
-
-            if not clicked_country:
-                log.warning(f"Country '{country}' not found — continuing without country")
         except Exception as e:
             log.warning(f"Could not select country '{country}': {e}")
 
