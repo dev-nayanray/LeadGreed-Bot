@@ -149,7 +149,10 @@ SYSTEM_PROMPT = """
   "affiliate_id": null,
   "no_traffic": true,
   "active": null,
-  "amount": null
+  "amount": null,
+  "override_code": null,
+  "funnel_countries": [],
+  "country": null
 }
 
 Для action = "add_hours" используй поле country_hours (список стран с индивидуальными часами):
@@ -710,13 +713,15 @@ CRM работает в GMT+3. Если в сообщении указан др�
 
 - Для funnel_slug_override: broker_ids = брокер, override_code = название фаннела (текст), countries = список стран (опционально), affiliate_id = ID аффилиата (опционально)
   Ключевые слова: "funnel", "slug", "фаннел", "slug override", "funnel mapping", "funnel override", "api offer slug"
-  ВАЖНО: "for DE", "for Germany", "for DE ES" и т.д. — это страны → countries. ISO коды после "for" — это всегда страны.
+  ВАЖНО: "for DE", "for Germany", "for DE ES" и т.д. — это страны → funnel_countries. ISO коды после "for" — это всегда страны.
+  ВАЖНО: "aff 123", "aff123", "affiliate 123" — это affiliate_id = "123". Число после "aff" — всегда аффилиат.
+  Используй поле "funnel_countries" (не "countries"!) чтобы не путаться с другими правилами.
   Примеры:
-  • "Nexus funnel override Pemex for DE" → {"action": "funnel_slug_override", "broker_ids": ["Nexus"], "override_code": "Pemex", "countries": ["Germany"], "affiliate_id": null}
-  • "Naga Joshua funnel override Pemex for DE aff 123" → {"action": "funnel_slug_override", "broker_ids": ["Naga Joshua"], "override_code": "Pemex", "countries": ["Germany"], "affiliate_id": "123"}
-  • "Nexus DE ES funnel Pemex" → {"action": "funnel_slug_override", "broker_ids": ["Nexus"], "override_code": "Pemex", "countries": ["Germany", "Spain"], "affiliate_id": null}
-  • "добавь фаннел Pemex для Nexus" → {"action": "funnel_slug_override", "broker_ids": ["Nexus"], "override_code": "Pemex", "countries": [], "affiliate_id": null}
-  override_code — точное название фаннела (текст, не число). Если страна не указана — countries: []
+  • "Nexus funnel override Pemex for DE" → {"action": "funnel_slug_override", "broker_ids": ["Nexus"], "override_code": "Pemex", "funnel_countries": ["Germany"], "affiliate_id": null}
+  • "Naga Joshua funnel override Pemex for DE aff 123" → {"action": "funnel_slug_override", "broker_ids": ["Naga Joshua"], "override_code": "Pemex", "funnel_countries": ["Germany"], "affiliate_id": "123"}
+  • "Nexus DE ES funnel Pemex" → {"action": "funnel_slug_override", "broker_ids": ["Nexus"], "override_code": "Pemex", "funnel_countries": ["Germany", "Spain"], "affiliate_id": null}
+  • "добавь фаннел Pemex для Nexus" → {"action": "funnel_slug_override", "broker_ids": ["Nexus"], "override_code": "Pemex", "funnel_countries": [], "affiliate_id": null}
+  override_code — точное название фаннела (текст, не число). Если страна не указана — funnel_countries: []
 
 - Возвращай ТОЛЬКО JSON
 
@@ -4955,7 +4960,7 @@ def build_confirm_text(action: dict) -> str:
     if a == "funnel_slug_override":
         brokers = ", ".join(str(b) for b in action.get("broker_ids", []))
         override_code = action.get("override_code", "?")
-        countries_list = action.get("countries", [])
+        countries_list = action.get("funnel_countries") or action.get("countries", [])
         countries_str = ", ".join(countries_list) if countries_list else "all countries"
         aff_id = action.get("affiliate_id")
         aff_str = f"\nAffiliate: `{aff_id}`" if aff_id else ""
@@ -5523,7 +5528,7 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                     )
             elif a == "funnel_slug_override":
                 override_code = str(action.get("override_code", ""))
-                countries_list = action.get("countries", [])
+                countries_list = action.get("funnel_countries") or action.get("countries", [])
                 aff_id = str(action.get("affiliate_id", "")) or None
                 if not override_code:
                     msg = "❌ Please specify funnel override code (name)."
