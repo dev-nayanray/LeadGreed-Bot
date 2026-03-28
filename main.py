@@ -3105,11 +3105,13 @@ async def action_add_revenue(broker_id: str, country: str, amount: str, affiliat
         return "❌ Amount field not found."
 
     # ── Параметр Affiliate (если нужен) ──────
+    affiliate_param_failed = False
     if affiliate_id:
         modal = await page.query_selector(".modal-body, [role='dialog']")
         param_ok = await _add_affiliate_parameter(page, modal, str(affiliate_id), close_dropdown=False)
         if not param_ok:
             log.warning(f"Could not add affiliate parameter {affiliate_id} — saving without it")
+            affiliate_param_failed = True
             affiliate_id = None  # не показывать (aff X) в сообщении если не добавилось
         # Закрываем суб-модалку ADD PARAMETER если осталась открытой (блокирует SAVE)
         await page.evaluate("""() => {
@@ -3147,7 +3149,10 @@ async def action_add_revenue(broker_id: str, country: str, amount: str, affiliat
         aff_label = f" (aff {affiliate_id})" if affiliate_id else ""
         if saved:
             log.info(f"Price saved for {country_label}: ${amount}{aff_label}")
-            return f"✅ Price added for {country_label}: ${amount}{aff_label}"
+            result = f"✅ Price added for {country_label}: ${amount}{aff_label}"
+            if affiliate_param_failed:
+                result += f"\n⚠️ Affiliate parameter not added (try again or add manually)"
+            return result
         else:
             raise Exception("SAVE button not found via JS")
     except Exception as e:
@@ -3483,6 +3488,7 @@ async def action_add_affiliate_mapping(broker_id: str, affiliate_id: str,
             await page.wait_for_timeout(400)
         except Exception as e:
             log.warning(f"Could not select country '{country}': {e}")
+            country = None  # помечаем что страна не выбрана
 
     await page.wait_for_timeout(300)
 
@@ -3533,7 +3539,8 @@ async def action_add_affiliate_mapping(broker_id: str, affiliate_id: str,
 
         country_str = f" / {country}" if country and country.lower() != "all" else ""
         log.info(f"Mapping saved: aff {affiliate_id} → {override_code} for broker {broker_id}{country_str}")
-        return f"✅ Mapped aff {affiliate_id}{country_str}: override ID = {override_code}"
+        result = f"✅ Mapped aff {affiliate_id}{country_str}: override ID = {override_code}"
+        return result
     except Exception:
         await _close_modal(page)
         return "⚠️ Save button not found."
@@ -3575,6 +3582,8 @@ async def action_add_funnel_slug_override(broker_id: str, override_code: str,
     await page.wait_for_timeout(500)
 
     # ── 1. Выбираем страны (мультиселект с чекбоксами) ──
+    countries_selected = []
+    countries_failed = []
     if countries:
         try:
             # Открываем Country дропдаун по лейблу
@@ -3632,8 +3641,10 @@ async def action_add_funnel_slug_override(broker_id: str, override_code: str,
                 }}""", country)
                 if clicked:
                     log.info(f"Selected country: {clicked}")
+                    countries_selected.append(country)
                 else:
                     log.warning(f"Country '{country}' not found")
+                    countries_failed.append(country)
                 await page.wait_for_timeout(300)
 
             # Закрываем Country дропдаун — повторный клик
@@ -3656,9 +3667,10 @@ async def action_add_funnel_slug_override(broker_id: str, override_code: str,
             log.warning(f"Could not select countries: {e}")
 
     # ── 2. Выбираем аффилиата (опционально) ──────────
+    aff_selected = False
     if affiliate_id:
         try:
-            # Открываем Affiliate дропдаун
+            # Открываем Affiliate дропдаун по лейблу через JS
             await page.evaluate("""() => {
                 const labels = document.querySelectorAll('.modal label, [role=dialog] label');
                 for (const lbl of labels) {
@@ -3672,9 +3684,9 @@ async def action_add_funnel_slug_override(broker_id: str, override_code: str,
                 }
                 return false;
             }""")
-            await page.wait_for_timeout(600)
+            await page.wait_for_timeout(700)
 
-            # Вводим ID аффилиата
+            # Вводим ID через JS
             await page.evaluate(f"""(affId) => {{
                 const inputs = document.querySelectorAll('input[id*="search-input"], input[id*="search"]');
                 for (const inp of inputs) {{
@@ -3689,7 +3701,7 @@ async def action_add_funnel_slug_override(broker_id: str, override_code: str,
             }}""", str(affiliate_id))
             await page.wait_for_timeout(800)
 
-            # Кликаем на аффилиата
+            # Кликаем через JS
             clicked_aff = await page.evaluate(f"""(affId) => {{
                 const items = document.querySelectorAll('li.dropdown-item, li.flex-fill');
                 for (const item of items) {{
@@ -3703,7 +3715,10 @@ async def action_add_funnel_slug_override(broker_id: str, override_code: str,
                 return null;
             }}""", str(affiliate_id))
             if clicked_aff:
+                aff_selected = True
                 log.info(f"Selected affiliate: {clicked_aff}")
+            else:
+                log.warning(f"Affiliate '{affiliate_id}' not found in list")
             await page.wait_for_timeout(400)
         except Exception as e:
             log.warning(f"Could not select affiliate '{affiliate_id}': {e}")
@@ -3753,7 +3768,17 @@ async def action_add_funnel_slug_override(broker_id: str, override_code: str,
         countries_str = ", ".join(countries) if countries else "all countries"
         aff_str = f" / aff {affiliate_id}" if affiliate_id else ""
         log.info(f"Funnel override saved: {override_code} for {broker_id} / {countries_str}{aff_str}")
-        return f"✅ Funnel override '{override_code}' added for {countries_str}{aff_str}"
+
+        warnings = []
+        if countries_failed:
+            warnings.append(f"⚠️ Countries not found: {', '.join(countries_failed)}")
+        if affiliate_id and not aff_selected:
+            warnings.append(f"⚠️ Affiliate {affiliate_id} not selected (not found in list)")
+
+        result = f"✅ Funnel override '{override_code}' added for {countries_str}{aff_str}"
+        if warnings:
+            result += "\n" + "\n".join(warnings)
+        return result
     except Exception:
         await _close_modal(page)
         return "⚠️ Save button not found."
