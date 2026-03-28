@@ -3423,7 +3423,7 @@ async def action_add_affiliate_mapping(broker_id: str, affiliate_id: str,
         try:
             await page.wait_for_timeout(500)
 
-            # Открываем Country дропдаун по лейблу
+            # Открываем Country дропдаун по лейблу через JS
             await page.evaluate("""() => {
                 const labels = document.querySelectorAll('.modal label, [role=dialog] label');
                 for (const lbl of labels) {
@@ -3439,26 +3439,38 @@ async def action_add_affiliate_mapping(broker_id: str, affiliate_id: str,
             }""")
             await page.wait_for_timeout(800)
 
-            # Ждём появления поля поиска (свежая ссылка)
-            country_search = await page.wait_for_selector(
-                "input[id*='search-input'], input[id*='search']",
-                timeout=4000
-            )
-            # Вводим страну
-            await country_search.type(country, delay=60)
-            await page.wait_for_timeout(600)
+            # Вводим страну через JS напрямую в поле поиска
+            typed = await page.evaluate(f"""(countryName) => {{
+                const inputs = document.querySelectorAll('input[id*="search-input"], input[id*="search"]');
+                for (const inp of inputs) {{
+                    if (inp.offsetParent !== null) {{
+                        inp.value = countryName;
+                        inp.dispatchEvent(new Event('input', {{bubbles: true}}));
+                        inp.dispatchEvent(new Event('change', {{bubbles: true}}));
+                        return true;
+                    }}
+                }}
+                return false;
+            }}""", country)
+            log.info(f"Country typed via JS: {typed}")
+            await page.wait_for_timeout(800)
 
-            # Кликаем — свежие ссылки на items
-            items = await page.query_selector_all("li.dropdown-item, li.flex-fill")
-            for item in items:
-                txt = (await item.inner_text()).strip()
-                if country.lower() in txt.lower():
-                    await item.click()
-                    log.info(f"Selected country: {txt}")
-                    await page.wait_for_timeout(400)
-                    break
+            # Кликаем через JS — не держим ссылки на элементы
+            clicked = await page.evaluate(f"""(countryName) => {{
+                const items = document.querySelectorAll('li.dropdown-item, li.flex-fill');
+                for (const item of items) {{
+                    if (item.innerText.trim().toLowerCase().includes(countryName.toLowerCase())) {{
+                        item.click();
+                        return item.innerText.trim();
+                    }}
+                }}
+                return null;
+            }}""", country)
+            if clicked:
+                log.info(f"Selected country: {clicked}")
             else:
                 log.warning(f"Country '{country}' not found in dropdown")
+            await page.wait_for_timeout(400)
         except Exception as e:
             log.warning(f"Could not select country '{country}': {e}")
 
