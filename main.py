@@ -3422,8 +3422,9 @@ async def action_add_affiliate_mapping(broker_id: str, affiliate_id: str,
     if country and country.lower() != "all":
         try:
             await page.wait_for_timeout(500)
-            # Находим Country дропдаун по его лейблу
-            country_clicked = await page.evaluate("""() => {
+
+            # Открываем Country дропдаун по лейблу
+            await page.evaluate("""() => {
                 const labels = document.querySelectorAll('.modal label, [role=dialog] label');
                 for (const lbl of labels) {
                     if (lbl.innerText.trim().toLowerCase() === 'country') {
@@ -3436,16 +3437,18 @@ async def action_add_affiliate_mapping(broker_id: str, affiliate_id: str,
                 }
                 return false;
             }""")
-            log.info(f"Country dropdown clicked: {country_clicked}")
-            await page.wait_for_timeout(600)
+            await page.wait_for_timeout(800)
 
+            # Ждём появления поля поиска (свежая ссылка)
             country_search = await page.wait_for_selector(
                 "input[id*='search-input'], input[id*='search']",
                 timeout=4000
             )
+            # Вводим страну
             await country_search.type(country, delay=60)
             await page.wait_for_timeout(600)
 
+            # Кликаем — свежие ссылки на items
             items = await page.query_selector_all("li.dropdown-item, li.flex-fill")
             for item in items:
                 txt = (await item.inner_text()).strip()
