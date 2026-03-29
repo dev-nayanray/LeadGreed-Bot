@@ -3360,11 +3360,13 @@ async def action_close_days(broker_id: str, country: str, days_to_close: list, c
 
 
 async def action_add_affiliate_mapping(broker_id: str, affiliate_id: str,
-                                        override_code: str, country: str = None) -> str:
+                                        override_code: str, country: str = None,
+                                        base_path: str = None) -> str:
     """Добавить маппинг аффилиата для брокера (Override Affiliate ID's)."""
     page = await get_page()
 
-    base_path = await find_and_open_broker(page, broker_id)
+    if not base_path:
+        base_path = await find_and_open_broker(page, broker_id)
     if not base_path:
         return f"❌ Broker '{broker_id}' not found."
 
@@ -3603,11 +3605,12 @@ async def action_add_affiliate_mapping(broker_id: str, affiliate_id: str,
 
 async def action_add_funnel_slug_override(broker_id: str, override_codes: list,
                                            countries: list = None, affiliate_id: str = None,
-                                           slug: str = None) -> str:
+                                           slug: str = None, base_path: str = None) -> str:
     """Добавить API Offer Slug Override для брокера."""
     page = await get_page()
 
-    base_path = await find_and_open_broker(page, broker_id)
+    if not base_path:
+        base_path = await find_and_open_broker(page, broker_id)
     if not base_path:
         return f"❌ Broker '{broker_id}' not found."
 
@@ -3750,15 +3753,38 @@ async def action_add_funnel_slug_override(broker_id: str, override_codes: list,
             }""")
             await page.wait_for_timeout(900)
 
-            # Переполучаем search input и используем type() — надёжнее
-            search_input = await page.wait_for_selector(
-                "input[id*='search-input'], input[id*='search']",
-                timeout=4000
-            )
-            await search_input.click()
-            await page.wait_for_timeout(100)
-            await search_input.type(str(affiliate_id), delay=80)
-            log.info(f"Affiliate search typed via Playwright: {affiliate_id}")
+            # Ищем search input внутри Affiliate секции (не country)
+            aff_search = await page.evaluate("""() => {
+                const labels = document.querySelectorAll('.modal label, [role=dialog] label');
+                for (const lbl of labels) {
+                    if (lbl.innerText.trim().toLowerCase() === 'affiliate') {
+                        const row = lbl.closest('.form-group, .row, fieldset') || lbl.parentElement;
+                        const inp = row?.querySelector('input[id*="search-input"], input[id*="search"]');
+                        if (inp && inp.offsetParent !== null) return inp.id;
+                    }
+                }
+                // Fallback — любой видимый search input
+                const inputs = document.querySelectorAll('input[id*="search-input"], input[id*="search"]');
+                for (const inp of inputs) {
+                    if (inp.offsetParent !== null) return inp.id;
+                }
+                return null;
+            }""")
+
+            if aff_search:
+                search_inp = await page.query_selector(f"#{aff_search}")
+            else:
+                search_inp = None
+
+            if search_inp:
+                await search_inp.click()
+                await page.wait_for_timeout(100)
+                await search_inp.type(str(affiliate_id), delay=80)
+                log.info(f"Affiliate search typed via Playwright: {affiliate_id}")
+            else:
+                # Последний fallback
+                await page.keyboard.type(str(affiliate_id), delay=80)
+                log.info(f"Affiliate search typed via keyboard: {affiliate_id}")
             await page.wait_for_timeout(900)
 
             # Кликаем через JS
@@ -5242,11 +5268,24 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
         # multi_broker_task — несколько брокеров из одного сообщения
         if a == "multi_broker_task":
             tasks = action.get("tasks", [])
+            # Кэш base_path — ищем каждого брокера только один раз
+            broker_base_cache: dict = {}
             for task in tasks:
                 t_type = task.get("type", "lead_task")
                 t_broker = task.get("broker_id", "")
                 t_country = task.get("country", "")
                 t_day = task.get("day", "")
+
+                # Получаем base_path из кэша или ищем один раз
+                if t_broker not in broker_base_cache:
+                    _page = await get_page()
+                    _bp = await find_and_open_broker(_page, t_broker, country_hint=t_country)
+                    broker_base_cache[t_broker] = _bp
+                    if _bp:
+                        log.info(f"Cached base_path for '{t_broker}': {_bp}")
+                    else:
+                        log.warning(f"Broker '{t_broker}' not found — skipping tasks for it")
+                t_base_path = broker_base_cache.get(t_broker)
 
                 lid = alog.log_action(f"multi_{t_type}", t_broker, f"{t_country} {t_day}",
                                       "pending", user_command=user_cmd)
@@ -5281,7 +5320,8 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                     broker_id=t_broker,
                                     override_codes=t_override_codes,
                                     countries=t_funnel_countries,
-                                    affiliate_id=str(one_aff)
+                                    affiliate_id=str(one_aff),
+                                    base_path=t_base_path
                                 )
                                 sub_parts.append(f"aff {one_aff}: {sub_msg}")
                             display_name = _last_broker_full_name if _last_broker_full_name != t_broker else t_broker
@@ -5292,7 +5332,8 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                 broker_id=t_broker,
                                 override_codes=t_override_codes,
                                 countries=t_funnel_countries,
-                                affiliate_id=t_aff_id
+                                affiliate_id=t_aff_id,
+                                base_path=t_base_path
                             )
                             display_name = _last_broker_full_name if _last_broker_full_name != t_broker else t_broker
                             results.append(f"*Broker {escape_md(display_name)}:*\n{funnel_msg}")
@@ -5310,7 +5351,8 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                 broker_id=t_broker,
                                 affiliate_id=t_aff_id,
                                 override_code=t_override_code,
-                                country=t_map_country
+                                country=t_map_country,
+                                base_path=t_base_path
                             )
                         display_name = _last_broker_full_name if _last_broker_full_name != t_broker else t_broker
                         results.append(f"*Broker {escape_md(display_name)}:*\n{aff_msg}")
@@ -5318,10 +5360,11 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
 
                     else:
                         # lead_task — капа + часы
+                        sub_parts = []
 
-                        # Ищем брокера ОДИН раз для этого таска
+                        # Используем кэшированный base_path
                         page = await get_page()
-                        mb_broker_base = await find_and_open_broker(page, t_broker, country_hint=t_country)
+                        mb_broker_base = t_base_path
 
                         # Капа
                         if task.get("cap") is not None:
