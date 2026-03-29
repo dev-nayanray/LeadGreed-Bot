@@ -6828,9 +6828,9 @@ async def _fetch_last_funnel(affiliate_id: str, country: str) -> str:
     except Exception:
         pass
 
-    # Ищем за последний год
+    # Ищем за последние 6 месяцев
     now = _dt.datetime.now()
-    from_dt = (now - _dt.timedelta(days=365)).strftime("%Y-%m-%d 00:00:00")
+    from_dt = (now - _dt.timedelta(days=180)).strftime("%Y-%m-%d 00:00:00")
     to_dt = now.strftime("%Y-%m-%d 23:59:59")
 
     payload = {
@@ -6865,7 +6865,8 @@ async def _fetch_last_funnel(affiliate_id: str, country: str) -> str:
                 f"{CRM_URL}/api/stats",
                 json=payload,
                 headers=headers,
-                timeout=aiohttp.ClientTimeout(total=20)
+                timeout=aiohttp.ClientTimeout(total=30),
+                ssl=False
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
@@ -6939,7 +6940,8 @@ async def _fetch_first_lead(broker_name: str, aff_ids: list, country: str) -> st
                 f"{CRM_URL}/api/stats",
                 json=payload,
                 headers=headers,
-                timeout=aiohttp.ClientTimeout(total=15)
+                timeout=aiohttp.ClientTimeout(total=30),
+                ssl=False
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
@@ -7020,7 +7022,8 @@ async def _fetch_first_lead(broker_name: str, aff_ids: list, country: str) -> st
                 f"{CRM_URL}/api/stats",
                 json=payload,
                 headers=headers,
-                timeout=aiohttp.ClientTimeout(total=30)
+                timeout=aiohttp.ClientTimeout(total=30),
+                ssl=False
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
