@@ -6848,9 +6848,15 @@ async def _fetch_last_funnel(affiliate_id: str, country: str) -> str:
         payload_json = json.dumps(payload)
         result = await _page.evaluate(f"""async () => {{
             try {{
+                const xsrf = document.cookie.split('; ').find(r => r.startsWith('XSRF-TOKEN='))?.split('=')[1];
+                const decodedXsrf = xsrf ? decodeURIComponent(xsrf) : '';
                 const resp = await fetch('/api/stats', {{
                     method: 'POST',
-                    headers: {{'Content-Type': 'application/json', 'Accept': 'application/json'}},
+                    headers: {{
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'X-XSRF-TOKEN': decodedXsrf
+                    }},
                     body: {json.dumps(payload_json)}
                 }});
                 if (!resp.ok) return null;
