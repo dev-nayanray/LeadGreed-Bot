@@ -153,6 +153,7 @@ SYSTEM_PROMPT = """
   "override_code": null,
   "override_codes": [],
   "funnel_countries": [],
+  "affiliate_ids": []
   "country": null
 }
 
@@ -719,13 +720,15 @@ CRM работает в GMT+3. Если в сообщении указан др�
   Используй поле "funnel_countries" (не "countries"!) чтобы не путаться с другими правилами.
   Если фаннел ОДИН — используй override_codes: ["Название"] (список из одного элемента).
   Если фаннелов НЕСКОЛЬКО — все в одном списке override_codes, это одна запись в CRM.
+  Если аффилиатов НЕСКОЛЬКО (формат "122/123" или "122, 123") — используй поле affiliate_ids (список), affiliate_id оставь null.
+  Если аффилиат ОДИН — используй affiliate_id (строка), affiliate_ids оставь [].
   Примеры:
-  • "Nexus funnel override Pemex for DE" → {"action": "funnel_slug_override", "broker_ids": ["Nexus"], "override_codes": ["Pemex"], "funnel_countries": ["Germany"], "affiliate_id": null}
-  • "Naga Joshua funnel override Pemex for DE aff 123" → {"action": "funnel_slug_override", "broker_ids": ["Naga Joshua"], "override_codes": ["Pemex"], "funnel_countries": ["Germany"], "affiliate_id": "123"}
-  • "Funnels - FinanzBot KI, KI Trading" → override_codes: ["FinanzBot KI", "KI Trading"]
+  • "Nexus funnel override Pemex for DE" → {"action": "funnel_slug_override", "broker_ids": ["Nexus"], "override_codes": ["Pemex"], "funnel_countries": ["Germany"], "affiliate_id": null, "affiliate_ids": []}
+  • "Naga Joshua funnel override Pemex for DE aff 123" → {"action": "funnel_slug_override", "broker_ids": ["Naga Joshua"], "override_codes": ["Pemex"], "funnel_countries": ["Germany"], "affiliate_id": "123", "affiliate_ids": []}
+  • "122/123 AVE CRG Funnels - FinanzBot KI, KI Trading" → {"action": "funnel_slug_override", "broker_ids": ["AVE CRG"], "override_codes": ["FinanzBot KI", "KI Trading"], "funnel_countries": [], "affiliate_id": null, "affiliate_ids": ["122", "123"]}
+  • "Funnels - FinanzBot KI, KI Trading (2 dif funnels pls to map)" → override_codes: ["FinanzBot KI", "KI Trading"]
   • "funnel to map - AI Trading App" → override_codes: ["AI Trading App"]
   • "map funnel as Immediate Profit" → override_codes: ["Immediate Profit"]
-  • "Legion DE Funnels - FinanzBot KI, KI Trading aff 123" → {"action": "funnel_slug_override", "broker_ids": ["Legion"], "override_codes": ["FinanzBot KI", "KI Trading"], "funnel_countries": ["Germany"], "affiliate_id": "123"}
   override_codes — список точных названий фаннелов (текст, не числа). Если страна не указана — funnel_countries: []
   ВАЖНО: если команда содержит "last funnel from", "same funnel as", "funnel from X id" и т.д. — это запрос на чтение существующих фаннелов, бот не умеет это делать → action: "unknown"
 
@@ -5085,7 +5088,13 @@ def build_confirm_text(action: dict) -> str:
         countries_list = action.get("funnel_countries") or action.get("countries", [])
         countries_str = ", ".join(countries_list) if countries_list else "all countries"
         aff_id = action.get("affiliate_id")
-        aff_str = f"\nAffiliate: `{aff_id}`" if aff_id else ""
+        aff_ids = action.get("affiliate_ids", [])
+        if aff_ids:
+            aff_str = f"\nAffiliates: `{', '.join(aff_ids)}`"
+        elif aff_id:
+            aff_str = f"\nAffiliate: `{aff_id}`"
+        else:
+            aff_str = ""
         return (
             f"📋 *Confirmation required*\n\n"
             f"Action: add funnel slug override\n"
@@ -5653,8 +5662,21 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                 override_codes = action.get("override_codes") or ([override_code] if override_code else [])
                 countries_list = action.get("funnel_countries") or action.get("countries", [])
                 aff_id = str(action.get("affiliate_id", "")) or None
+                aff_ids = action.get("affiliate_ids", [])
                 if not override_codes:
                     msg = "❌ Please specify funnel override code (name)."
+                elif aff_ids:
+                    # Несколько аффилиатов — делаем по одному
+                    sub_results = []
+                    for one_aff in aff_ids:
+                        sub_msg = await action_add_funnel_slug_override(
+                            broker_id=str(broker_id),
+                            override_codes=override_codes,
+                            countries=countries_list if countries_list else None,
+                            affiliate_id=str(one_aff)
+                        )
+                        sub_results.append(f"aff {one_aff}: {sub_msg}")
+                    msg = "\n".join(sub_results)
                 else:
                     msg = await action_add_funnel_slug_override(
                         broker_id=str(broker_id),
