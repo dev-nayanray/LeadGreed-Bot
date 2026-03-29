@@ -3414,19 +3414,44 @@ async def action_add_affiliate_mapping(broker_id: str, affiliate_id: str,
     await page.wait_for_timeout(1500)
     log.info(f"Opened mapped-sources: {url}")
 
+    # Проверяем нет ли нотификации об ошибке сразу на странице
+    page_error = await page.evaluate("""() => {
+        const els = document.querySelectorAll('.noty_body, [class*="noty_body"]');
+        for (const el of els) {
+            const txt = el.innerText?.trim() || '';
+            if (txt.toLowerCase().includes('not being sent') || txt.toLowerCase().includes('mapped source')) {
+                return txt;
+            }
+        }
+        return null;
+    }""")
+    if page_error:
+        return f"⚠️ Aff ID is not being sent to {_last_broker_full_name or broker_id}"
+
+    # Ждём загрузки страницы — у брокеров с большим количеством записей это дольше
+    try:
+        await page.wait_for_selector(
+            "button, .empty-state, table",
+            timeout=10000
+        )
+    except Exception:
+        pass
+    await page.wait_for_timeout(500)
+
     # Нажимаем кнопку ADD (в центре если нет записей, или справа вверху если есть)
     try:
         add_btn = await page.wait_for_selector(
             "button:has-text('ADD THE FIRST AFFILIATE ID OVERRIDE'), "
             "button:has-text('ADD AFFILIATE ID OVERRIDE'), "
-            "a:has-text('ADD AFFILIATE ID OVERRIDE')",
-            timeout=10000
+            "a:has-text('ADD AFFILIATE ID OVERRIDE'), "
+            "button.btn-primary.btn_big, button.btn_big.btn-primary",
+            timeout=15000
         )
         await add_btn.click()
         await page.wait_for_timeout(800)
         log.info("Clicked ADD AFFILIATE ID OVERRIDE")
     except Exception:
-        return "❌ ADD AFFILIATE ID OVERRIDE button not found."
+        return f"⚠️ Aff ID is not being sent to {_last_broker_full_name or broker_id}"
 
     # Ждём модалку
     try:
@@ -3630,7 +3655,7 @@ async def action_add_affiliate_mapping(broker_id: str, affiliate_id: str,
             if error_msg.startswith('already_exists:'):
                 return f"⚠️ Record already exists (aff {affiliate_id}{f' / {country}' if country else ''} already mapped)"
             elif error_msg.startswith('not_sent:'):
-                return f"⚠️ Aff ID is not being sent to this broker"
+                return f"⚠️ Aff ID is not being sent to {_last_broker_full_name or broker_id}"
 
         country_str = f" / {country}" if country and country.lower() != "all" else ""
         log.info(f"Mapping saved: aff {affiliate_id} → {override_code} for broker {broker_id}{country_str}")
@@ -3924,7 +3949,7 @@ async def action_add_funnel_slug_override(broker_id: str, override_codes: list,
             if error_msg.startswith('already_exists:'):
                 return f"⚠️ Record already exists ('{', '.join(override_codes)}' for {countries_str_err} already set)"
             elif error_msg.startswith('not_sent:'):
-                return f"⚠️ Aff ID is not being sent to this broker"
+                return f"⚠️ Aff ID is not being sent to {_last_broker_full_name or broker_id}"
 
         countries_str = ", ".join(countries) if countries else "all countries"
         aff_str = f" / aff {affiliate_id}" if affiliate_id else ""
