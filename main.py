@@ -611,6 +611,7 @@ Capitan, Legion, Fintrix CRG, Swin FR CRG, Swin FR CRG duplicate, Swin EN CRG, S
   - "lead_task" — поставить часы + капу (cap может быть null если только часы)
   - "close_day" — закрыть день для страны
   - "funnel_override" — добавить фаннел маппинг (override_codes, funnel_countries, affiliate_ids или affiliate_id)
+  - "affiliate_override" — добавить маппинг аффилиата (affiliate_id, override_code, country)
   - "close_day" — закрыть часы на этот день (PAUSED)
 
 Формат "desk-расписания":
@@ -3731,7 +3732,7 @@ async def action_add_funnel_slug_override(broker_id: str, override_codes: list,
     if affiliate_id:
         try:
             # Ждём дольше после закрытия country dropdown
-            await page.wait_for_timeout(800)
+            await page.wait_for_timeout(1000)
 
             # Открываем Affiliate дропдаун по лейблу через JS
             await page.evaluate("""() => {
@@ -3747,31 +3748,17 @@ async def action_add_funnel_slug_override(broker_id: str, override_codes: list,
                 }
                 return false;
             }""")
-            await page.wait_for_timeout(800)
+            await page.wait_for_timeout(900)
 
-            # Вводим ID через JS — ищем только видимый input
-            await page.evaluate(f"""(affId) => {{
-                const inputs = document.querySelectorAll('input[id*="search-input"], input[id*="search"]');
-                for (const inp of inputs) {{
-                    if (inp.offsetParent !== null) {{
-                        inp.value = '';
-                        inp.dispatchEvent(new Event('input', {{bubbles: true}}));
-                    }}
-                }}
-            }}""", str(affiliate_id))
-            await page.wait_for_timeout(300)
-            await page.evaluate(f"""(affId) => {{
-                const inputs = document.querySelectorAll('input[id*="search-input"], input[id*="search"]');
-                for (const inp of inputs) {{
-                    if (inp.offsetParent !== null) {{
-                        inp.value = affId;
-                        inp.dispatchEvent(new Event('input', {{bubbles: true}}));
-                        inp.dispatchEvent(new Event('change', {{bubbles: true}}));
-                        return true;
-                    }}
-                }}
-                return false;
-            }}""", str(affiliate_id))
+            # Переполучаем search input и используем type() — надёжнее
+            search_input = await page.wait_for_selector(
+                "input[id*='search-input'], input[id*='search']",
+                timeout=4000
+            )
+            await search_input.click()
+            await page.wait_for_timeout(100)
+            await search_input.type(str(affiliate_id), delay=80)
+            log.info(f"Affiliate search typed via Playwright: {affiliate_id}")
             await page.wait_for_timeout(900)
 
             # Кликаем через JS
@@ -4880,7 +4867,7 @@ async def _add_affiliate_parameter(page, modal, affiliate_id, close_dropdown: bo
 
 def escape_md(text: str) -> str:
     """Экранировать спецсимволы Markdown v1 в тексте для Telegram."""
-    for ch in ('*', '`', '['):
+    for ch in ('_', '*', '`', '['):
         text = text.replace(ch, f'\\{ch}')
     return text
 
@@ -5298,7 +5285,7 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                 )
                                 sub_parts.append(f"aff {one_aff}: {sub_msg}")
                             display_name = _last_broker_full_name if _last_broker_full_name != t_broker else t_broker
-                            results.append(f"*Broker {escape_md(display_name)}:*\n{escape_md(chr(10).join(sub_parts))}")
+                            results.append(f"*Broker {escape_md(display_name)}:*\n" + "\n".join(sub_parts))
                             alog.update_action(lid, "success", "; ".join(sub_parts)[:200])
                         else:
                             funnel_msg = await action_add_funnel_slug_override(
@@ -5308,8 +5295,26 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                 affiliate_id=t_aff_id
                             )
                             display_name = _last_broker_full_name if _last_broker_full_name != t_broker else t_broker
-                            results.append(f"*Broker {escape_md(display_name)}:*\n{escape_md(funnel_msg)}")
+                            results.append(f"*Broker {escape_md(display_name)}:*\n{funnel_msg}")
                             alog.update_action(lid, "success" if "✅" in funnel_msg else "error", funnel_msg[:200])
+
+                    elif t_type == "affiliate_override":
+                        t_aff_id = str(task.get("affiliate_id", ""))
+                        t_override_code = str(task.get("override_code", ""))
+                        t_map_country = task.get("country") or None
+
+                        if not t_aff_id or not t_override_code:
+                            aff_msg = "❌ affiliate_id or override_code missing"
+                        else:
+                            aff_msg = await action_add_affiliate_mapping(
+                                broker_id=t_broker,
+                                affiliate_id=t_aff_id,
+                                override_code=t_override_code,
+                                country=t_map_country
+                            )
+                        display_name = _last_broker_full_name if _last_broker_full_name != t_broker else t_broker
+                        results.append(f"*Broker {escape_md(display_name)}:*\n{aff_msg}")
+                        alog.update_action(lid, "success" if "✅" in aff_msg else "error", aff_msg[:200])
 
                     else:
                         # lead_task — капа + часы
