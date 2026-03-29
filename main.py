@@ -48,6 +48,10 @@ _page: Optional[Page] = None
 # Хранилище ожидающих подтверждения команд
 pending: dict = {}
 
+# Кэш base_path брокеров — ключ: broker_id, значение: (base_path, timestamp)
+_broker_path_cache: dict = {}
+_BROKER_CACHE_TTL = 300  # 5 минут
+
 # Последнее найденное полное имя брокера (заполняется в find_and_open_broker)
 _last_broker_full_name: str = ""
 
@@ -884,11 +888,30 @@ async def do_login():
 
 
 async def find_and_open_broker(page: Page, broker_id: str, country_hint: str = None) -> Optional[str]:
+    """Wrapper с кэшированием результата."""
+    import time
+    cache_key = str(broker_id).strip().lower()
+    if cache_key in _broker_path_cache:
+        cached_path, cached_time, cached_name = _broker_path_cache[cache_key]
+        if time.time() - cached_time < _BROKER_CACHE_TTL:
+            log.info(f"find_and_open_broker: cache hit for '{broker_id}' → {cached_path}")
+            global _last_broker_full_name
+            if cached_name:
+                _last_broker_full_name = cached_name
+            return cached_path
+    result = await _find_and_open_broker_impl(page, broker_id, country_hint)
+    if result:
+        _cache_broker_path(broker_id, result, _last_broker_full_name)
+    return result
+
+
+async def _find_and_open_broker_impl(page: Page, broker_id: str, country_hint: str = None) -> Optional[str]:
     """
     Найти брокера и вернуть его base path (/clients/ID).
     Возвращает None если брокер not found.
     country_hint — название страны, для LATAM-маршрутизации.
     """
+    import time
     global _last_broker_full_name
     _last_broker_full_name = broker_id  # fallback
     broker_id = str(broker_id).strip()
@@ -1132,6 +1155,13 @@ async def find_and_open_broker(page: Page, broker_id: str, country_hint: str = N
     log.info(f"Taking first result: {rows[0]['name']}")
     _last_broker_full_name = rows[0]["name"]
     return rows[0]["href"].replace("/settings", "")
+
+
+def _cache_broker_path(broker_id: str, path, name: str = None):
+    """Сохранить base_path в кэш."""
+    import time
+    if path:
+        _broker_path_cache[broker_id.strip().lower()] = (path, time.time(), name or broker_id)
 
 
 # ══════════════════════════════════════════
