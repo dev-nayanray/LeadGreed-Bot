@@ -3438,18 +3438,32 @@ async def action_add_affiliate_mapping(broker_id: str, affiliate_id: str,
         pass
     await page.wait_for_timeout(500)
 
-    # Нажимаем кнопку ADD (в центре если нет записей, или справа вверху если есть)
+    # Нажимаем кнопку ADD через JS — надёжнее чем wait_for_selector
     try:
-        add_btn = await page.wait_for_selector(
-            "button:has-text('ADD THE FIRST AFFILIATE ID OVERRIDE'), "
-            "button:has-text('ADD AFFILIATE ID OVERRIDE'), "
-            "a:has-text('ADD AFFILIATE ID OVERRIDE'), "
-            "button.btn-primary.btn_big, button.btn_big.btn-primary",
-            timeout=15000
-        )
-        await add_btn.click()
+        # Ждём появления кнопки (страницы с большими таблицами грузятся дольше)
+        clicked_add = None
+        for attempt in range(15):  # до 15 секунд
+            await page.wait_for_timeout(1000)
+            clicked_add = await page.evaluate("""() => {
+                const btns = document.querySelectorAll('button');
+                for (const btn of btns) {
+                    const txt = btn.innerText?.toUpperCase() || '';
+                    if (txt.includes('ADD') && txt.includes('AFFILIATE') && txt.includes('OVERRIDE')) {
+                        btn.click();
+                        return btn.innerText.trim();
+                    }
+                }
+                // Fallback по классу
+                const byClass = document.querySelector('button.btn_big.btn-primary, button.btn-primary.btn_big');
+                if (byClass) { byClass.click(); return byClass.innerText.trim(); }
+                return null;
+            }""")
+            if clicked_add:
+                break
+        if not clicked_add:
+            return f"⚠️ Aff ID is not being sent to {_last_broker_full_name or broker_id}"
+        log.info(f"Clicked ADD button: {clicked_add[:50]}")
         await page.wait_for_timeout(800)
-        log.info("Clicked ADD AFFILIATE ID OVERRIDE")
     except Exception:
         return f"⚠️ Aff ID is not being sent to {_last_broker_full_name or broker_id}"
 
@@ -4328,131 +4342,135 @@ async def action_change_caps(broker_id: str, country: str, cap_value: int = 0, d
         # Поле поиска: input#country-8or__search-input (появляется после клика).
         # В модалке несколько smart__dropdown (Type, Interval, Timezone, Countries)
         # поэтому таргетируем именно #country-8or, а не первый попавшийся.
-        try:
-            # Ищем Countries dropdown по id
-            dropdown_trigger = await page.query_selector("#country-8or")
-            if not dropdown_trigger:
-                # Fallback: последний smart__dropdown в модалке (Countries идёт последним)
-                all_dropdowns = await modal.query_selector_all(".smart__dropdown")
-                if all_dropdowns:
-                    dropdown_trigger = all_dropdowns[-1]
-                    log.info(f"Fallback: using last of {len(all_dropdowns)} smart__dropdowns")
-            if not dropdown_trigger:
-                raise Exception("Countries dropdown (#country-8or) not found")
-
-            await dropdown_trigger.click()
-            await page.wait_for_timeout(500)
-            log.info("Clicked countries dropdown")
-
-            # Ждём поле поиска: input#country-8or__search-input
-            search_input = None
+        # Если country = "all" или пустая — пропускаем выбор (оставляем "All countries")
+        if not country or country.lower() == "all":
+            country_selected = True  # пропускаем, поле остаётся пустым = все страны
+        else:
             try:
-                await page.wait_for_function(
-                    "document.getElementById('country-8or__search-input') !== null",
-                    timeout=5000
-                )
-                search_input = await page.query_selector("#country-8or__search-input")
-                log.info("Search input found: #country-8or__search-input")
-            except Exception:
+                # Ищем Countries dropdown по id
+                dropdown_trigger = await page.query_selector("#country-8or")
+                if not dropdown_trigger:
+                    # Fallback: последний smart__dropdown в модалке (Countries идёт последним)
+                    all_dropdowns = await modal.query_selector_all(".smart__dropdown")
+                    if all_dropdowns:
+                        dropdown_trigger = all_dropdowns[-1]
+                        log.info(f"Fallback: using last of {len(all_dropdowns)} smart__dropdowns")
+                if not dropdown_trigger:
+                    raise Exception("Countries dropdown (#country-8or) not found")
+
+                await dropdown_trigger.click()
+                await page.wait_for_timeout(500)
+                log.info("Clicked countries dropdown")
+
+                # Ждём поле поиска: input#country-8or__search-input
+                search_input = None
                 try:
                     await page.wait_for_function(
-                        "!!document.querySelector(\"input[id*='search-input']\")",
-                        timeout=3000
+                        "document.getElementById('country-8or__search-input') !== null",
+                        timeout=5000
                     )
-                    search_input = await page.query_selector("input[id*='search-input']")
-                    log.info("Search input found via id*=search-input fallback")
+                    search_input = await page.query_selector("#country-8or__search-input")
+                    log.info("Search input found: #country-8or__search-input")
                 except Exception:
-                    log.info("Search input not found")
-
-            if search_input:
-                await search_input.click(click_count=3)
-                await search_input.fill(country)
-                await search_input.evaluate(
-                    "el => { el.dispatchEvent(new Event('input',{bubbles:true})); "
-                    "el.dispatchEvent(new Event('change',{bubbles:true})); }"
-                )
-                # Ждём пока Vue отфильтрует список (< 10 элементов)
-                for _ in range(20):
-                    await page.wait_for_timeout(200)
-                    cnt = await page.evaluate(
-                        "() => document.querySelectorAll('#country-8or-list li, li.dropdown-item, li.flex-fill').length"
-                    )
-                    if cnt < 10:
-                        break
-                log.info(f"Typed: {country}")
-            else:
-                log.warning("Search input not found — keyboard fallback")
-                await page.keyboard.type(country, delay=60)
-                await page.wait_for_timeout(600)
-
-            # Кликаем по стране в списке (ul#country-8or-list)
-            country_selected = False
-            # Кликаем через JS evaluate — элемент не устаревает
-            country_selected = await page.evaluate("""(countryName) => {
-                const lists = [
-                    ...document.querySelectorAll('#country-8or-list li'),
-                    ...document.querySelectorAll('li.dropdown-item'),
-                    ...document.querySelectorAll('li.flex-fill'),
-                ];
-                // Сначала точное совпадение
-                for (const item of lists) {
-                    if (item.innerText.trim().toLowerCase() === countryName.toLowerCase()) {
-                        item.click();
-                        return item.innerText.trim();
-                    }
-                }
-                // Потом частичное
-                for (const item of lists) {
-                    if (item.innerText.trim().toLowerCase().includes(countryName.toLowerCase())) {
-                        item.click();
-                        return item.innerText.trim();
-                    }
-                }
-                return null;
-            }""", country)
-            if country_selected:
-                log.info(f"Country selected via JS: {country_selected}")
-                actual_country = country_selected  # реальное имя выбранной страны
-                country_selected = True
-                await page.wait_for_timeout(400)
-            else:
-                actual_country = country
-                # Fallback — Playwright query прямо перед кликом
-                items = await page.query_selector_all("li.dropdown-item, li.flex-fill")
-                log.info(f"Dropdown items: {len(items)}")
-                for item in items:
                     try:
-                        txt = (await item.inner_text()).strip()
-                        if country.lower() == txt.lower():
-                            await item.click()
-                            country_selected = True
-                            actual_country = txt
-                            log.info(f"Country selected: {txt}")
-                            await page.wait_for_timeout(400)
-                            break
+                        await page.wait_for_function(
+                            "!!document.querySelector(\"input[id*='search-input']\")",
+                            timeout=3000
+                        )
+                        search_input = await page.query_selector("input[id*='search-input']")
+                        log.info("Search input found via id*=search-input fallback")
                     except Exception:
-                        continue
-                if not country_selected:
+                        log.info("Search input not found")
+
+                if search_input:
+                    await search_input.click(click_count=3)
+                    await search_input.fill(country)
+                    await search_input.evaluate(
+                        "el => { el.dispatchEvent(new Event('input',{bubbles:true})); "
+                        "el.dispatchEvent(new Event('change',{bubbles:true})); }"
+                    )
+                    # Ждём пока Vue отфильтрует список (< 10 элементов)
+                    for _ in range(20):
+                        await page.wait_for_timeout(200)
+                        cnt = await page.evaluate(
+                            "() => document.querySelectorAll('#country-8or-list li, li.dropdown-item, li.flex-fill').length"
+                        )
+                        if cnt < 10:
+                            break
+                    log.info(f"Typed: {country}")
+                else:
+                    log.warning("Search input not found — keyboard fallback")
+                    await page.keyboard.type(country, delay=60)
+                    await page.wait_for_timeout(600)
+
+                # Кликаем по стране в списке (ul#country-8or-list)
+                country_selected = False
+                # Кликаем через JS evaluate — элемент не устаревает
+                country_selected = await page.evaluate("""(countryName) => {
+                    const lists = [
+                        ...document.querySelectorAll('#country-8or-list li'),
+                        ...document.querySelectorAll('li.dropdown-item'),
+                        ...document.querySelectorAll('li.flex-fill'),
+                    ];
+                    // Сначала точное совпадение
+                    for (const item of lists) {
+                        if (item.innerText.trim().toLowerCase() === countryName.toLowerCase()) {
+                            item.click();
+                            return item.innerText.trim();
+                        }
+                    }
+                    // Потом частичное
+                    for (const item of lists) {
+                        if (item.innerText.trim().toLowerCase().includes(countryName.toLowerCase())) {
+                            item.click();
+                            return item.innerText.trim();
+                        }
+                    }
+                    return null;
+                }""", country)
+                if country_selected:
+                    log.info(f"Country selected via JS: {country_selected}")
+                    actual_country = country_selected  # реальное имя выбранной страны
+                    country_selected = True
+                    await page.wait_for_timeout(400)
+                else:
+                    actual_country = country
+                    # Fallback — Playwright query прямо перед кликом
+                    items = await page.query_selector_all("li.dropdown-item, li.flex-fill")
+                    log.info(f"Dropdown items: {len(items)}")
                     for item in items:
                         try:
                             txt = (await item.inner_text()).strip()
-                            if country.lower() in txt.lower():
+                            if country.lower() == txt.lower():
                                 await item.click()
                                 country_selected = True
                                 actual_country = txt
-                                log.info(f"Country selected (partial): {txt}")
+                                log.info(f"Country selected: {txt}")
                                 await page.wait_for_timeout(400)
                                 break
                         except Exception:
                             continue
+                    if not country_selected:
+                        for item in items:
+                            try:
+                                txt = (await item.inner_text()).strip()
+                                if country.lower() in txt.lower():
+                                    await item.click()
+                                    country_selected = True
+                                    actual_country = txt
+                                    log.info(f"Country selected (partial): {txt}")
+                                    await page.wait_for_timeout(400)
+                                    break
+                            except Exception:
+                                continue
 
-            if not country_selected:
+                if not country_selected:
+                    await _close_modal(page)
+                    return f"❌ Country '{country}' not found in list."
+
+            except Exception as e:
                 await _close_modal(page)
-                return f"❌ Country '{country}' not found in list."
-
-        except Exception as e:
-            await _close_modal(page)
-            return f"❌ Error selecting country: {e}"
+                return f"❌ Error selecting country: {e}"
 
         # Закрываем дропдаун — повторный клик по #country-8or
         try:
