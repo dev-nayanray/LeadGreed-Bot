@@ -493,7 +493,7 @@ SYSTEM_PROMPT = """
 
 Правила разбора:
 - Первая строка содержит метаданные. Разбирай так:
-  • Числа в начале (17) — affiliate id
+  • Числа в начале (17) — affiliate id → сохраняй в поле "affiliate_ids": ["17"] в lead_task
   • ISO коды стран (CA, DE, BR...) — переводи в полное название → country
   • Языки (EN, RU, PL...) — ИГНОРИРУЙ (это язык деска, не страна)
   • Тип сделки (CPA, CRG) — запомни тип, используй для определения нужен ли affiliate_id в капе
@@ -5468,6 +5468,16 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                     if bid not in rotation_info:
                         rotation_info[bid] = {"affs": [], "country": broker_country_cache.get(bid, ""), "is_tomorrow": False}
                     rotation_info[bid]["affs"].extend(affs)
+                # Собираем оригинального аффа из lead_task
+                if task.get("type") == "lead_task":
+                    bid = task.get("broker_id", "")
+                    affs = task.get("affiliate_ids", [])
+                    if bid and affs:
+                        if bid not in rotation_info:
+                            rotation_info[bid] = {"affs": [], "country": task.get("country", ""), "is_tomorrow": False}
+                        for a in affs:
+                            if str(a) not in rotation_info[bid]["affs"]:
+                                rotation_info[bid]["affs"].append(str(a))
 
             for task in tasks:
                 if task.get("type") == "lead_task" and task.get("country") and task.get("broker_id"):
