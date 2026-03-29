@@ -7058,8 +7058,8 @@ async def _report_loop(bot):
             local_minute = now.minute
             today_date = (now + datetime.timedelta(hours=3)).date()
 
-            # Midnight swap в 00:00 GMT+3
-            if local_hour == 0 and local_minute == 0 and last_midnight_swap != today_date:
+            # Midnight swap — при первой проверке нового дня
+            if last_midnight_swap != today_date and local_hour == 0:
                 last_midnight_swap = today_date
                 today_rotations.clear()
                 today_rotations.update(tomorrow_rotations)
