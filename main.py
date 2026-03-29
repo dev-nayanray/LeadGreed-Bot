@@ -52,6 +52,13 @@ pending: dict = {}
 _broker_path_cache: dict = {}
 _BROKER_CACHE_TTL = 300  # 5 минут
 
+# Ротации для отчётов
+# Формат: {"broker_name": {"affs": ["122","123"], "country": "Germany"}, ...}
+today_rotations: dict = {}
+tomorrow_rotations: dict = {}
+# Ротации для которых уже отправили "started" уведомление
+fired_started: set = set()
+
 # Последнее найденное полное имя брокера (заполняется в find_and_open_broker)
 _last_broker_full_name: str = ""
 
@@ -5435,6 +5442,33 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
             broker_base_cache: dict = {}
             # Кэш стран — берём из lead_task для использования в других задачах
             broker_country_cache: dict = {}
+            # Группировка строк результата по брокеру (OrderedDict сохраняет порядок)
+            broker_lines: dict = {}
+
+            # Собираем данные ротации для отчётов
+            # rotation_info: {broker_id: {"affs": [...], "country": "...", "is_tomorrow": bool}}
+            rotation_info: dict = {}
+            for task in tasks:
+                if task.get("type") == "lead_task" and task.get("country") and task.get("broker_id"):
+                    broker_country_cache[task["broker_id"]] = task["country"]
+                    bid = task["broker_id"]
+                    if bid not in rotation_info:
+                        rotation_info[bid] = {"affs": [], "country": task["country"], "is_tomorrow": False}
+                    # Определяем is_tomorrow по дню недели
+                    import datetime as _dt
+                    day_names = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
+                    tomorrow_name = day_names[(_dt.datetime.now().weekday() + 1) % 7]
+                    t_day_val = task.get("day", "")
+                    if t_day_val and t_day_val.lower() == tomorrow_name.lower():
+                        rotation_info[bid]["is_tomorrow"] = True
+                # Собираем аффов из funnel_override
+                if task.get("type") == "funnel_override":
+                    bid = task.get("broker_id", "")
+                    affs = task.get("affiliate_ids", [])
+                    if bid not in rotation_info:
+                        rotation_info[bid] = {"affs": [], "country": broker_country_cache.get(bid, ""), "is_tomorrow": False}
+                    rotation_info[bid]["affs"].extend(affs)
+
             for task in tasks:
                 if task.get("type") == "lead_task" and task.get("country") and task.get("broker_id"):
                     broker_country_cache[task["broker_id"]] = task["country"]
@@ -5469,7 +5503,8 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                             country_hint=t_country
                         )
                         display_name = _last_broker_full_name if _last_broker_full_name != t_broker else t_broker
-                        results.append(f"*Broker {escape_md(display_name)}:*\n🚫 {escape_md(close_msg)}")
+                        if display_name not in broker_lines: broker_lines[display_name] = []
+                        broker_lines[display_name].append(f"🚫 {close_msg}")
                         alog.update_action(lid, "success" if "❌" not in close_msg else "error", close_msg[:200])
 
                     elif t_type == "funnel_override":
@@ -5486,7 +5521,9 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
 
                         if not t_override_codes:
                             funnel_msg = "❌ No override codes specified"
-                            results.append(f"*Broker {escape_md(t_broker)}:*\n{escape_md(funnel_msg)}")
+                            display_name = _last_broker_full_name if _last_broker_full_name != t_broker else t_broker
+                            if display_name not in broker_lines: broker_lines[display_name] = []
+                            broker_lines[display_name].append(f"📝 Mapping: {funnel_msg}")
                         elif t_aff_ids:
                             sub_parts = []
                             for one_aff in t_aff_ids:
@@ -5499,7 +5536,8 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                 )
                                 sub_parts.append(f"aff {one_aff}: {sub_msg}")
                             display_name = _last_broker_full_name if _last_broker_full_name != t_broker else t_broker
-                            results.append(f"*Broker {escape_md(display_name)}:*\n" + "\n".join(sub_parts))
+                            if display_name not in broker_lines: broker_lines[display_name] = []
+                            broker_lines[display_name].append("📝 Mapping: " + "\n".join(sub_parts))
                             alog.update_action(lid, "success", "; ".join(sub_parts)[:200])
                         else:
                             funnel_msg = await action_add_funnel_slug_override(
@@ -5510,7 +5548,8 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                 base_path=t_base_path
                             )
                             display_name = _last_broker_full_name if _last_broker_full_name != t_broker else t_broker
-                            results.append(f"*Broker {escape_md(display_name)}:*\n{funnel_msg}")
+                            if display_name not in broker_lines: broker_lines[display_name] = []
+                            broker_lines[display_name].append(f"📝 Mapping: {funnel_msg}")
                             alog.update_action(lid, "success" if "✅" in funnel_msg else "error", funnel_msg[:200])
 
                     elif t_type == "affiliate_override":
@@ -5529,7 +5568,8 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                 base_path=t_base_path
                             )
                         display_name = _last_broker_full_name if _last_broker_full_name != t_broker else t_broker
-                        results.append(f"*Broker {escape_md(display_name)}:*\n{aff_msg}")
+                        if display_name not in broker_lines: broker_lines[display_name] = []
+                        broker_lines[display_name].append(f"📝 Aff mapping: {aff_msg}")
                         alog.update_action(lid, "success" if "✅" in aff_msg else "error", aff_msg[:200])
 
                     else:
@@ -5613,16 +5653,37 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                 sub_parts.append(f"❌ Broker '{t_broker}' not found")
 
                         display_name = _last_broker_full_name if _last_broker_full_name != t_broker else t_broker
-                        results.append(f"*Broker {escape_md(display_name)}:*\n{escape_md(chr(10).join(sub_parts))}")
+                        if display_name not in broker_lines:
+                            broker_lines[display_name] = []
+                        for part in sub_parts:
+                            broker_lines[display_name].append(part)
                         alog.update_action(lid, "success" if not any("❌" in p for p in sub_parts) else "error",
                                           "; ".join(sub_parts)[:200])
 
                 except Exception as e:
-                    results.append(f"*Broker {escape_md(t_broker)}:*\n❌ {escape_md(str(e))}")
+                    display_name = _last_broker_full_name if _last_broker_full_name != t_broker else t_broker
+                    if display_name not in broker_lines: broker_lines[display_name] = []
+                    broker_lines[display_name].append(f"❌ {str(e)}")
                     alog.update_action(lid, "error", str(e)[:200])
 
+            # Сохраняем ротации для отчётов
+            for bid, info in rotation_info.items():
+                broker_display = _last_broker_full_name if _last_broker_full_name != bid else bid
+                entry = {"affs": list(set(info["affs"])), "country": info["country"]}
+                if info["is_tomorrow"]:
+                    tomorrow_rotations[broker_display] = entry
+                    log.info(f"Rotation saved to tomorrow: {broker_display} / {info['country']} / affs {entry['affs']}")
+                else:
+                    today_rotations[broker_display] = entry
+                    log.info(f"Rotation saved to today: {broker_display} / {info['country']} / affs {entry['affs']}")
+
+            # Собираем финальное сообщение — один блок на брокера
             alog.set_status("last_action", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-            msg_text = "\n\n".join(results) or "✅ Done."
+            final_parts = []
+            for broker_name, lines in broker_lines.items():
+                block = f"*Broker {escape_md(broker_name)}:*\n" + "\n\n".join(lines)
+                final_parts.append(block)
+            msg_text = "\n\n".join(final_parts) or "✅ Done."
             for attempt in range(3):
                 try:
                     await bot.send_message(chat_id, msg_text, parse_mode="Markdown", disable_notification=True)
@@ -6638,6 +6699,350 @@ async def _post_init(application):
     _task_queue = asyncio.Queue()
     _queue_worker_task = asyncio.create_task(_queue_worker())
     log.info("Task queue started.")
+    # Запускаем фоновый отчёт каждые 15 минут
+    asyncio.create_task(_report_loop(application.bot))
+
+
+REPORT_CHAT_ID = -5132784554  # Notifications чат
+
+# Флаги стран по ISO коду или полному названию
+_COUNTRY_FLAGS = {
+    "germany": "🇩🇪", "united kingdom": "🇬🇧", "uk": "🇬🇧", "australia": "🇦🇺",
+    "france": "🇫🇷", "spain": "🇪🇸", "italy": "🇮🇹", "netherlands": "🇳🇱",
+    "belgium": "🇧🇪", "switzerland": "🇨🇭", "austria": "🇦🇹", "sweden": "🇸🇪",
+    "norway": "🇳🇴", "denmark": "🇩🇰", "finland": "🇫🇮", "portugal": "🇵🇹",
+    "poland": "🇵🇱", "czech republic": "🇨🇿", "hungary": "🇭🇺", "romania": "🇷🇴",
+    "greece": "🇬🇷", "turkey": "🇹🇷", "israel": "🇮🇱", "canada": "🇨🇦",
+    "united states": "🇺🇸", "brazil": "🇧🇷", "mexico": "🇲🇽", "argentina": "🇦🇷",
+    "colombia": "🇨🇴", "chile": "🇨🇱", "peru": "🇵🇪", "south africa": "🇿🇦",
+    "nigeria": "🇳🇬", "kenya": "🇰🇪", "ghana": "🇬🇭", "india": "🇮🇳",
+    "indonesia": "🇮🇩", "malaysia": "🇲🇾", "singapore": "🇸🇬", "thailand": "🇹🇭",
+    "vietnam": "🇻🇳", "philippines": "🇵🇭", "japan": "🇯🇵", "south korea": "🇰🇷",
+    "new zealand": "🇳🇿", "ukraine": "🇺🇦", "russia": "🇷🇺", "kazakhstan": "🇰🇿",
+    "united arab emirates": "🇦🇪", "saudi arabia": "🇸🇦", "egypt": "🇪🇬",
+    "morocco": "🇲🇦", "croatia": "🇭🇷", "serbia": "🇷🇸", "slovakia": "🇸🇰",
+    "slovenia": "🇸🇮", "bulgaria": "🇧🇬", "latvia": "🇱🇻", "lithuania": "🇱🇹",
+    "estonia": "🇪🇪", "moldova": "🇲🇩", "georgia": "🇬🇪", "armenia": "🇦🇲",
+}
+
+def _country_flag(country: str) -> str:
+    """Вернуть флаг для страны."""
+    if not country:
+        return ""
+    flag = _COUNTRY_FLAGS.get(country.lower(), "")
+    if not flag:
+        # Генерируем флаг из ISO кода через unicode regional indicators
+        iso = country[:2].upper()
+        try:
+            flag = chr(0x1F1E6 + ord(iso[0]) - ord('A')) + chr(0x1F1E6 + ord(iso[1]) - ord('A'))
+        except Exception:
+            flag = ""
+    return flag
+
+
+async def _fetch_first_lead(broker_name: str, aff_ids: list, country: str) -> str:
+    """Получить email первого лида для ротации."""
+    import aiohttp
+    import urllib.parse
+
+    if not _context:
+        return ""
+
+    cookies_list = await _context.cookies()
+    cookies = {c["name"]: c["value"] for c in cookies_list}
+    xsrf = cookies.get("XSRF-TOKEN", "")
+    try:
+        xsrf = urllib.parse.unquote(xsrf)
+    except Exception:
+        pass
+
+    now = datetime.datetime.now()
+    from_dt = now.strftime("%Y-%m-%d 00:00:00")
+    to_dt = now.strftime("%Y-%m-%d 23:59:59")
+
+    payload = {
+        "from_datetime": from_dt,
+        "to_datetime": to_dt,
+        "timezone": "Europe/Istanbul",
+        "test_leads": "exclude",
+        "page": 1,
+        "per_page": 100,
+        "breakdowns": [],
+        "trafficType": "all",
+        "ord": [{"field": "id", "direction": "asc"}],  # первый лид = наименьший ID
+        "filter": {"isGlobalSearch": False, "globalSearchValues": [], "search": "", "searchType": "single", "searchBy": "email", "converted": "all", "successful": "all", "queued": "all"},
+        "fields": ["broker_name", "affiliate_name", "country", "email", "created_at", "affid", "broker_id"],
+        "narrowDownAffiliate": None,
+        "narrowDownCountry": None,
+        "narrowDownBroker": None,
+        "from_page": "stats",
+    }
+
+    headers = {
+        "Content-Type": "application/json;charset=utf-8",
+        "Accept": "application/json, text/plain, */*",
+        "X-XSRF-TOKEN": xsrf,
+        "Referer": f"{CRM_URL}/stats/details",
+        "Origin": CRM_URL,
+    }
+
+    try:
+        async with aiohttp.ClientSession(cookies=cookies) as session:
+            async with session.post(
+                f"{CRM_URL}/api/stats",
+                json=payload,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    leads = data.get("data", []) if isinstance(data, dict) else data
+                    # Фильтруем по affid из нашего списка аффов
+                    aff_ids_int = [int(a) for a in aff_ids if str(a).isdigit()]
+                    for lead in leads:
+                        lead_affid = lead.get("affid")
+                        lead_broker = lead.get("broker_name", "") or ""
+                        lead_email = lead.get("email", "")
+                        # Проверяем совпадение аффа
+                        if lead_affid in aff_ids_int and lead_email:
+                            # Проверяем совпадение брокера (частичное)
+                            if broker_name.lower() in lead_broker.lower() or lead_broker.lower() in broker_name.lower():
+                                log.info(f"First lead found: {lead_email} (aff {lead_affid}, broker {lead_broker})")
+                                return lead_email
+                    # Если точного совпадения по брокеру нет — берём первый лид с нужным аффом
+                    for lead in leads:
+                        if lead.get("affid") in aff_ids_int and lead.get("email"):
+                            return lead.get("email", "")
+    except Exception as e:
+        log.warning(f"First lead fetch error: {e}")
+    return ""
+    """Запросить статистику из CRM API используя cookies браузера."""
+    import aiohttp
+    import urllib.parse
+
+    if not _context:
+        return []
+
+    cookies_list = await _context.cookies()
+    cookies = {c["name"]: c["value"] for c in cookies_list}
+
+    # XSRF-TOKEN может быть URL-encoded
+    xsrf = cookies.get("XSRF-TOKEN", "")
+    try:
+        xsrf = urllib.parse.unquote(xsrf)
+    except Exception:
+        pass
+
+    now = datetime.datetime.now()
+    from_dt = now.strftime("%Y-%m-%d 00:00:00")
+    to_dt = now.strftime("%Y-%m-%d 23:59:59")
+
+    payload = {
+        "successfullLeadsOnly": False,
+        "hideDuplicateFailedLeads": False,
+        "from_datetime": from_dt,
+        "to_datetime": to_dt,
+        "timezone": "Europe/Istanbul",
+        "group_by": group_by,
+        "breakdowns": [],
+        "from_page": "stats",
+        "breakdown_request": True,
+        "test_leads": "exclude",
+        "trafficType": "all",
+        "insideHoursOnly": False,
+        "createdInsideDateRangeOnly": False,
+        "aggregateFields": [
+            {"key": "id", "show": True},
+            {"key": "name", "show": True},
+            {"key": "total_leads", "show": True},
+            {"key": "successful_leads", "show": True},
+        ],
+    }
+
+    headers = {
+        "Content-Type": "application/json;charset=utf-8",
+        "Accept": "application/json, text/plain, */*",
+        "X-XSRF-TOKEN": xsrf,
+        "Referer": f"{CRM_URL}/stats/analytics",
+        "Origin": CRM_URL,
+    }
+
+    try:
+        async with aiohttp.ClientSession(cookies=cookies) as session:
+            async with session.post(
+                f"{CRM_URL}/api/stats",
+                json=payload,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    log.info(f"Stats API ({group_by}): {len(data)} records")
+                    return data
+                else:
+                    text = await resp.text()
+                    log.warning(f"Stats API returned {resp.status}: {text[:200]}")
+                    return []
+    except Exception as e:
+        log.warning(f"Stats API error: {e}")
+        return []
+
+
+async def _build_report() -> str:
+    """Сформировать текст отчёта по лидам — только по активным ротациям."""
+    if not today_rotations:
+        return ""  # Нет активных ротаций — не шлём отчёт
+
+    broker_data, aff_data = await asyncio.gather(
+        _fetch_crm_stats("brokers"),
+        _fetch_crm_stats("affiliates"),
+    )
+
+    if not broker_data:
+        return ""
+
+    now = datetime.datetime.now()
+    time_str = now.strftime("%H:%M")
+
+    # Индексируем данные по имени (lowercase для поиска)
+    broker_index = {b["name"].lower(): b for b in broker_data}
+    aff_index = {a["name"].lower(): a for a in aff_data}
+
+    lines = [f"📊 *Stats {time_str}*\n"]
+    has_data = False
+
+    for broker_name, info in today_rotations.items():
+        country = info.get("country", "")
+        aff_ids = info.get("affs", [])
+
+        # Ищем брокера в данных API (частичное совпадение)
+        broker_rec = None
+        for key, rec in broker_index.items():
+            if broker_name.lower() in key or key in broker_name.lower():
+                broker_rec = rec
+                break
+
+        b_leads = broker_rec.get("total_leads", 0) if broker_rec else 0
+
+        # Строка страны
+        country_iso = country[:2].upper() if country else "??"
+        flag = _country_flag(country)
+        lines.append(f"{flag} *{country_iso}* — {broker_name}")
+        lines.append(f"  Leads: {b_leads}")
+
+        # Аффилиаты
+        for aff_id in aff_ids:
+            aff_rec = None
+            for key, rec in aff_index.items():
+                # Ищем по ID в имени: "122 - Diamond" содержит "122"
+                if f" {aff_id} " in f" {key} " or key.startswith(f"{aff_id} ") or key.startswith(f"{aff_id}-") or f"({aff_id})" in key:
+                    aff_rec = rec
+                    break
+            a_leads = aff_rec.get("total_leads", 0) if aff_rec else 0
+            lines.append(f"    {aff_id} — {a_leads}")
+
+        lines.append("")
+        if b_leads > 0:
+            has_data = True
+
+    if not has_data and all(
+        (broker_index.get(k.lower(), {}).get("total_leads", 0) == 0)
+        for k in today_rotations
+    ):
+        # Все нули — всё равно шлём чтобы было видно что ротации живые
+        pass
+
+    return "\n".join(lines).strip()
+
+
+async def _report_loop(bot):
+    """Фоновый цикл отправки отчётов каждые 5 минут с 08:00 до 20:00 GMT+3."""
+    log.info("Report loop started.")
+    last_midnight_swap = None
+    while True:
+        try:
+            await asyncio.sleep(60)
+            now = datetime.datetime.utcnow()
+            local_hour = (now.hour + 3) % 24
+            local_minute = now.minute
+            today_date = (now + datetime.timedelta(hours=3)).date()
+
+            # Midnight swap в 00:00 GMT+3
+            if local_hour == 0 and local_minute == 0 and last_midnight_swap != today_date:
+                last_midnight_swap = today_date
+                today_rotations.clear()
+                today_rotations.update(tomorrow_rotations)
+                tomorrow_rotations.clear()
+                fired_started.clear()
+                log.info(f"Midnight swap: today_rotations now has {len(today_rotations)} entries")
+
+            # Проверка "started" — каждую минуту если есть активные ротации
+            if today_rotations and 8 <= local_hour < 20:
+                unfired = [k for k in today_rotations if k not in fired_started]
+                if unfired:
+                    broker_data = await _fetch_crm_stats("brokers")
+                    aff_data = await _fetch_crm_stats("affiliates")
+                    broker_index = {b["name"].lower(): b for b in broker_data}
+                    aff_index = {a["name"].lower(): a for a in aff_data}
+
+                    for broker_name in unfired:
+                        info = today_rotations[broker_name]
+                        country = info.get("country", "")
+
+                        # Ищем брокера
+                        b_leads = 0
+                        for key, rec in broker_index.items():
+                            if broker_name.lower() in key or key in broker_name.lower():
+                                b_leads = rec.get("total_leads", 0)
+                                break
+
+                        # Ищем аффов
+                        aff_leads = 0
+                        for aff_id in info.get("affs", []):
+                            for key, rec in aff_index.items():
+                                if f"({aff_id})" in key or key.startswith(f"{aff_id} ") or key.startswith(f"{aff_id}-"):
+                                    aff_leads += rec.get("total_leads", 0)
+                                    break
+
+                        if b_leads > 0 or aff_leads > 0:
+                            fired_started.add(broker_name)
+                            flag = _country_flag(country)
+                            country_iso = country[:2].upper() if country else ""
+                            aff_str = "/".join(info.get("affs", []))
+                            time_str = datetime.datetime.now().strftime("%H:%M")
+                            msg = f"▶️ *STARTED*\n{broker_name} {flag}{country_iso}"
+                            if aff_str:
+                                msg += f" (aff {aff_str})"
+                            msg += f" • {time_str}"
+                            # Добавляем email первого лида
+                            first_email = await _fetch_first_lead(broker_name, info.get("affs", []), country)
+                            if first_email:
+                                msg += f"\n📧 {first_email}"
+                            await bot.send_message(
+                                REPORT_CHAT_ID,
+                                msg,
+                                parse_mode="Markdown",
+                                disable_notification=False  # started — с уведомлением
+                            )
+                            log.info(f"Started notification: {broker_name} {country_iso}")
+
+            # Только с 08:00 до 20:00 и каждые 15 минут
+            if 8 <= local_hour < 20 and local_minute % 15 == 0:
+                report = await _build_report()
+                if report:
+                    await bot.send_message(
+                        REPORT_CHAT_ID,
+                        report,
+                        parse_mode="Markdown",
+                        disable_notification=True
+                    )
+                    log.info(f"Report sent to {REPORT_CHAT_ID}")
+                await asyncio.sleep(60)
+        except Exception as e:
+            log.warning(f"Report loop error: {e}")
+            await asyncio.sleep(60)
+            log.warning(f"Report loop error: {e}")
+            await asyncio.sleep(60)
 
 
 def main():
