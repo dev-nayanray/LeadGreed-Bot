@@ -6872,6 +6872,11 @@ async def _fetch_last_funnel(affiliate_id: str, country: str) -> str:
         log.info(f"_fetch_last_funnel: leads count={len(leads)}")
 
         for lead in leads:
+            # Фильтруем по affid и стране клиент-сайд
+            if lead.get("affid") != aff_id_int:
+                continue
+            if country and country.lower() not in (lead.get("country") or "").lower():
+                continue
             slug = lead.get("funnel_slug_override") or lead.get("funnel") or ""
             if slug and slug not in ("null", ""):
                 log.info(f"Last funnel for aff {affiliate_id} / {country}: {slug}")
