@@ -6871,6 +6871,7 @@ async def _fetch_last_funnel(affiliate_id: str, country: str) -> str:
                 if resp.status == 200:
                     data = await resp.json()
                     leads = data.get("data", []) if isinstance(data, dict) else data
+                    log.info(f"_fetch_last_funnel: status=200, leads count={len(leads)}, first={leads[0] if leads else 'none'}")
                     aff_id_int = int(affiliate_id) if str(affiliate_id).isdigit() else None
                     for lead in leads:
                         if lead.get("affid") != aff_id_int:
