@@ -609,6 +609,8 @@ Capitan, Legion, Fintrix CRG, Swin FR CRG, Swin FR CRG duplicate, Swin EN CRG, S
 }
 Каждая подзадача имеет type:
   - "lead_task" — поставить часы + капу (cap может быть null если только часы)
+  - "close_day" — закрыть день для страны
+  - "funnel_override" — добавить фаннел маппинг (override_codes, funnel_countries, affiliate_ids или affiliate_id)
   - "close_day" — закрыть часы на этот день (PAUSED)
 
 Формат "desk-расписания":
@@ -5276,9 +5278,41 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                         results.append(f"*Broker {escape_md(display_name)}:*\n🚫 {escape_md(close_msg)}")
                         alog.update_action(lid, "success" if "❌" not in close_msg else "error", close_msg[:200])
 
+                    elif t_type == "funnel_override":
+                        t_override_codes = task.get("override_codes", [])
+                        t_funnel_countries = task.get("funnel_countries") or ([t_country] if t_country else None)
+                        t_aff_ids = task.get("affiliate_ids", [])
+                        t_aff_id = task.get("affiliate_id") or None
+
+                        if not t_override_codes:
+                            funnel_msg = "❌ No override codes specified"
+                            results.append(f"*Broker {escape_md(t_broker)}:*\n{escape_md(funnel_msg)}")
+                        elif t_aff_ids:
+                            sub_parts = []
+                            for one_aff in t_aff_ids:
+                                sub_msg = await action_add_funnel_slug_override(
+                                    broker_id=t_broker,
+                                    override_codes=t_override_codes,
+                                    countries=t_funnel_countries,
+                                    affiliate_id=str(one_aff)
+                                )
+                                sub_parts.append(f"aff {one_aff}: {sub_msg}")
+                            display_name = _last_broker_full_name if _last_broker_full_name != t_broker else t_broker
+                            results.append(f"*Broker {escape_md(display_name)}:*\n{escape_md(chr(10).join(sub_parts))}")
+                            alog.update_action(lid, "success", "; ".join(sub_parts)[:200])
+                        else:
+                            funnel_msg = await action_add_funnel_slug_override(
+                                broker_id=t_broker,
+                                override_codes=t_override_codes,
+                                countries=t_funnel_countries,
+                                affiliate_id=t_aff_id
+                            )
+                            display_name = _last_broker_full_name if _last_broker_full_name != t_broker else t_broker
+                            results.append(f"*Broker {escape_md(display_name)}:*\n{escape_md(funnel_msg)}")
+                            alog.update_action(lid, "success" if "✅" in funnel_msg else "error", funnel_msg[:200])
+
                     else:
                         # lead_task — капа + часы
-                        sub_parts = []
 
                         # Ищем брокера ОДИН раз для этого таска
                         page = await get_page()
