@@ -3438,6 +3438,13 @@ async def action_add_affiliate_mapping(broker_id: str, affiliate_id: str,
     await page.wait_for_timeout(1500)
     log.info(f"Opened mapped-sources: {url}")
 
+    # Ждём загрузки таблицы перед чтением маппингов
+    try:
+        await page.wait_for_selector("table tr td", timeout=8000)
+    except Exception:
+        pass
+    await page.wait_for_timeout(500)
+
     # Читаем существующие маппинги из таблицы
     existing_mappings = await page.evaluate("""() => {
         const rows = document.querySelectorAll('table tr');
@@ -6876,7 +6883,7 @@ async def _fetch_last_funnel(affiliate_id: str, country: str) -> str:
                             log.info(f"Last funnel for aff {affiliate_id} / {country}: {slug}")
                             return slug
     except Exception as e:
-        log.warning(f"_fetch_last_funnel error: {e}")
+        log.warning(f"_fetch_last_funnel error: {type(e).__name__}: {e}")
     return ""
 
 
