@@ -3744,29 +3744,27 @@ async def action_add_funnel_slug_override(broker_id: str, override_codes: list,
             await page.wait_for_timeout(800)
 
             for country in countries:
-                # Вводим страну через JS
-                await page.evaluate(f"""(countryName) => {{
+                # Очищаем поле и вводим страну через Playwright type()
+                search_inp = await page.evaluate("""() => {
                     const inputs = document.querySelectorAll('input[id*="search-input"], input[id*="search"]');
-                    for (const inp of inputs) {{
-                        if (inp.offsetParent !== null) {{
+                    for (const inp of inputs) {
+                        if (inp.offsetParent !== null) {
                             inp.value = '';
-                            inp.dispatchEvent(new Event('input', {{bubbles: true}}));
-                        }}
-                    }}
-                }}""", country)
-                await page.wait_for_timeout(300)
-                await page.evaluate(f"""(countryName) => {{
-                    const inputs = document.querySelectorAll('input[id*="search-input"], input[id*="search"]');
-                    for (const inp of inputs) {{
-                        if (inp.offsetParent !== null) {{
-                            inp.value = countryName;
-                            inp.dispatchEvent(new Event('input', {{bubbles: true}}));
-                            inp.dispatchEvent(new Event('change', {{bubbles: true}}));
-                            return true;
-                        }}
-                    }}
-                    return false;
-                }}""", country)
+                            inp.dispatchEvent(new Event('input', {bubbles: true}));
+                            return inp.id;
+                        }
+                    }
+                    return null;
+                }""")
+                await page.wait_for_timeout(200)
+                if search_inp:
+                    inp_el = await page.query_selector(f"#{search_inp}")
+                    if inp_el:
+                        await inp_el.click()
+                        await inp_el.type(country, delay=60)
+                        log.info(f"Typed country via Playwright: {country}")
+                else:
+                    await page.keyboard.type(country, delay=60)
                 await page.wait_for_timeout(700)
 
                 # Кликаем через JS
@@ -6415,16 +6413,25 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Прайсы — выполняем без подтверждения, через очередь, без промежуточных сообщений
-    if action.get("action") in ("add_revenue", "add_affiliate_revenue", "set_prices", "bulk_schedule", "multi_broker_task"):
-        queue_size = _task_queue.qsize()
-        is_busy = _worker_busy or queue_size > 0
-        if is_busy:
-            position = queue_size + (1 if _worker_busy else 0) + 1
-            await update.message.reply_text(f"⏳ Queued, position #{position}…", disable_notification=True)
-        else:
-            await update.message.reply_text("⏳ Working on it…", disable_notification=True)
+    if action.get("action") in ("add_revenue", "add_affiliate_revenue", "set_prices"):
         action["_user_command"] = text
         await enqueue(_execute_confirmed_task, context.bot, chat_id, action)
+        return
+
+    # bulk_schedule и multi_broker_task — запрашиваем подтверждение
+    if action.get("action") in ("bulk_schedule", "multi_broker_task"):
+        kb = [[
+            InlineKeyboardButton("✅ Execute", callback_data="confirm"),
+            InlineKeyboardButton("❌ Cancel",  callback_data="cancel"),
+        ]]
+        sent = await update.message.reply_text(
+            build_confirm_text(action),
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(kb),
+            disable_notification=True
+        )
+        action["_user_command"] = text
+        pending[(chat_id, sent.message_id)] = action
         return
 
     if action.get("action") == "unknown" or (not action.get("broker_ids") and action.get("action") not in ("set_prices", "bulk_schedule", "multi_broker_task")):
