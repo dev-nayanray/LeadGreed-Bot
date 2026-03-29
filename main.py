@@ -3753,7 +3753,12 @@ async def action_add_funnel_slug_override(broker_id: str, override_codes: list,
             }""")
             await page.wait_for_timeout(900)
 
-            # Ищем search input внутри Affiliate секции (не country)
+            # Ждём чтобы список аффилиатов прогрузился
+            try:
+                await page.wait_for_selector("li.dropdown-item, li.flex-fill", timeout=3000)
+            except Exception:
+                pass
+            await page.wait_for_timeout(200)
             aff_search = await page.evaluate("""() => {
                 const labels = document.querySelectorAll('.modal label, [role=dialog] label');
                 for (const lbl of labels) {
