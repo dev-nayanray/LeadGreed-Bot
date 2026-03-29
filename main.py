@@ -757,7 +757,19 @@ CRM работает в GMT+3. Если в сообщении указан др�
   • "funnel to map - AI Trading App" → override_codes: ["AI Trading App"]
   • "map funnel as Immediate Profit" → override_codes: ["Immediate Profit"]
   override_codes — список точных названий фаннелов (текст, не числа). Если страна не указана — funnel_countries: []
-  ВАЖНО: если команда содержит "last funnel from", "same funnel as", "funnel from X id" и т.д. — это запрос на чтение существующих фаннелов, бот не умеет это делать → action: "unknown"
+  ВАЖНО: если команда содержит "last funnel", "same funnel as", "map funnel as last one in X country", "funnel as last one in X id" — это запрос на автоматическое определение фаннела.
+  В этом случае используй поля: use_last_funnel: true, reference_affiliate: "<id аффа>", reference_country: "<страна>", override_codes: []
+  Пример: "map funnel as last one in 33 AU" → {
+    "type": "funnel_override",
+    "broker_id": "...",
+    "use_last_funnel": true,
+    "reference_affiliate": "33",
+    "reference_country": "Australia",
+    "override_codes": [],
+    "funnel_countries": ["Australia"],
+    "affiliate_id": null,
+    "affiliate_ids": []
+  }
 
 - Возвращай ТОЛЬКО JSON
 
@@ -3426,6 +3438,23 @@ async def action_add_affiliate_mapping(broker_id: str, affiliate_id: str,
     await page.wait_for_timeout(1500)
     log.info(f"Opened mapped-sources: {url}")
 
+    # Читаем существующие маппинги из таблицы
+    existing_mappings = await page.evaluate("""() => {
+        const rows = document.querySelectorAll('table tr');
+        const result = [];
+        rows.forEach(row => {
+            const tds = row.querySelectorAll('td');
+            if (tds.length < 4) return;
+            const affCell = tds[0]?.innerText?.trim() || '';
+            const countryCell = tds[1]?.innerText?.trim() || '';
+            const overrideCell = tds[3]?.innerText?.trim() || '';
+            if (affCell && overrideCell) {
+                result.push({aff: affCell, country: countryCell, override: overrideCell});
+            }
+        });
+        return result;
+    }""")
+
     # Проверяем нет ли нотификации об ошибке сразу на странице
     page_error = await page.evaluate("""() => {
         const els = document.querySelectorAll('.noty_body, [class*="noty_body"]');
@@ -3680,7 +3709,17 @@ async def action_add_affiliate_mapping(broker_id: str, affiliate_id: str,
             log.info(f"CRM noty detected after SAVE: {error_msg[:80]}")
             await _close_modal(page)
             if error_msg.startswith('already_exists:'):
-                return f"⚠️ Record already exists (aff {affiliate_id}{f' / {country}' if country else ''} already mapped)"
+                # Ищем существующий маппинг для этого аффа/страны
+                existing_override = None
+                for m in existing_mappings:
+                    aff_match = str(affiliate_id) in m["aff"]
+                    country_match = not country or country.lower() in m["country"].lower()
+                    if aff_match and country_match:
+                        existing_override = m["override"]
+                        break
+                if existing_override:
+                    return f"⚠️ aff {affiliate_id} / {country} already mapped as {existing_override}"
+                return f"⚠️ aff {affiliate_id}{f' / {country}' if country else ''} already mapped"
             elif error_msg.startswith('not_sent:'):
                 return f"⚠️ Aff ID is not being sent to {_last_broker_full_name or broker_id}"
 
@@ -5529,6 +5568,21 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                         t_aff_ids = task.get("affiliate_ids", [])
                         t_aff_id = task.get("affiliate_id") or None
 
+                        # Автоматически определяем фанел если use_last_funnel
+                        if task.get("use_last_funnel"):
+                            ref_aff = task.get("reference_affiliate", "")
+                            ref_country = task.get("reference_country", "") or (t_funnel_countries[0] if t_funnel_countries else "")
+                            if ref_aff and ref_country:
+                                fetched_funnel = await _fetch_last_funnel(ref_aff, ref_country)
+                                if fetched_funnel:
+                                    t_override_codes = [fetched_funnel]
+                                    log.info(f"Auto-detected funnel for aff {ref_aff} / {ref_country}: {fetched_funnel}")
+                                else:
+                                    display_name = _last_broker_full_name if _last_broker_full_name != t_broker else t_broker
+                                    if display_name not in broker_lines: broker_lines[display_name] = []
+                                    broker_lines[display_name].append(f"📝 Mapping: ❌ Could not find last funnel for aff {ref_aff} / {ref_country}")
+                                    continue
+
                         if not t_override_codes:
                             funnel_msg = "❌ No override codes specified"
                             display_name = _last_broker_full_name if _last_broker_full_name != t_broker else t_broker
@@ -6748,6 +6802,82 @@ def _country_flag(country: str) -> str:
         except Exception:
             flag = ""
     return flag
+
+
+async def _fetch_last_funnel(affiliate_id: str, country: str) -> str:
+    """Найти последний фанел который использовал аффилиат для данной страны."""
+    import aiohttp
+    import urllib.parse
+    import datetime as _dt
+
+    if not _context:
+        return ""
+
+    cookies_list = await _context.cookies()
+    cookies = {c["name"]: c["value"] for c in cookies_list}
+    xsrf = cookies.get("XSRF-TOKEN", "")
+    try:
+        xsrf = urllib.parse.unquote(xsrf)
+    except Exception:
+        pass
+
+    # Ищем за последний год
+    now = _dt.datetime.now()
+    from_dt = (now - _dt.timedelta(days=365)).strftime("%Y-%m-%d 00:00:00")
+    to_dt = now.strftime("%Y-%m-%d 23:59:59")
+
+    payload = {
+        "from_datetime": from_dt,
+        "to_datetime": to_dt,
+        "timezone": "Europe/Istanbul",
+        "test_leads": "exclude",
+        "page": 1,
+        "per_page": 10,
+        "breakdowns": [],
+        "trafficType": "all",
+        "ord": [{"field": "id", "direction": "desc"}],  # последний лид первым
+        "filter": {"isGlobalSearch": False, "globalSearchValues": [], "search": "", "searchType": "single", "searchBy": "email", "converted": "all", "successful": "all", "queued": "all"},
+        "fields": ["affiliate_name", "country", "funnel_slug_override", "funnel", "affid"],
+        "narrowDownAffiliate": None,
+        "narrowDownCountry": None,
+        "narrowDownBroker": None,
+        "from_page": "stats",
+    }
+
+    headers = {
+        "Content-Type": "application/json;charset=utf-8",
+        "Accept": "application/json, text/plain, */*",
+        "X-XSRF-TOKEN": xsrf,
+        "Referer": f"{CRM_URL}/stats/details",
+        "Origin": CRM_URL,
+    }
+
+    try:
+        async with aiohttp.ClientSession(cookies=cookies) as session:
+            async with session.post(
+                f"{CRM_URL}/api/stats",
+                json=payload,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=20)
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    leads = data.get("data", []) if isinstance(data, dict) else data
+                    aff_id_int = int(affiliate_id) if str(affiliate_id).isdigit() else None
+                    for lead in leads:
+                        if lead.get("affid") != aff_id_int:
+                            continue
+                        lead_country = lead.get("country", "")
+                        if country.lower() not in lead_country.lower():
+                            continue
+                        # Берём funnel_slug_override если есть, иначе funnel
+                        slug = lead.get("funnel_slug_override") or lead.get("funnel") or ""
+                        if slug and slug not in ("null", ""):
+                            log.info(f"Last funnel for aff {affiliate_id} / {country}: {slug}")
+                            return slug
+    except Exception as e:
+        log.warning(f"_fetch_last_funnel error: {e}")
+    return ""
 
 
 async def _fetch_first_lead(broker_name: str, aff_ids: list, country: str) -> str:
