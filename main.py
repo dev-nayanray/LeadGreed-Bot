@@ -5170,23 +5170,56 @@ def build_confirm_text(action: dict) -> str:
 
     if a == "multi_broker_task":
         tasks = action.get("tasks", [])
-        lines = []
+
+        # Группируем задачи по брокеру
+        brokers_data = {}
         for t in tasks:
             bid = t.get("broker_id", "?")
-            country = t.get("country", "?")
-            if t.get("type") == "close_day":
-                lines.append(f"  🚫 {bid}: close {country} on {t.get('day', '?')}")
-            else:
-                cap_str = f", cap {t.get('cap')}" if t.get("cap") else ""
-                hours_str = f" {t.get('start', '?')}–{t.get('end', '?')}" if t.get("start") else ""
-                lines.append(f"  ✏️ {bid}: {country}{hours_str}{cap_str} ({t.get('day', '?')})")
-        tasks_str = "\n".join(lines)
-        return (
-            f"📋 *Confirmation required*\n\n"
-            f"Action: multi-broker task ({len(tasks)} brokers)\n"
-            f"Tasks:\n{tasks_str}\n\n"
-            f"Confirm?"
-        )
+            if bid not in brokers_data:
+                brokers_data[bid] = {"lead": None, "funnels": [], "aff_overrides": [], "close_days": []}
+            tt = t.get("type")
+            if tt == "lead_task":
+                brokers_data[bid]["lead"] = t
+            elif tt == "funnel_override":
+                brokers_data[bid]["funnels"].append(t)
+            elif tt == "affiliate_override":
+                brokers_data[bid]["aff_overrides"].append(t)
+            elif tt == "close_day":
+                brokers_data[bid]["close_days"].append(t)
+
+        sections = []
+        for bid, d in brokers_data.items():
+            lead = d["lead"]
+            geo = lead.get("country", "—") if lead else "—"
+            cap = str(lead.get("cap", "—")) if lead else "—"
+            start = lead.get("start", "") if lead else ""
+            end = lead.get("end", "") if lead else ""
+            day = lead.get("day", "") if lead else ""
+            wh = f"{start}–{end}" if start else "—"
+            if day:
+                wh += f" ({day})"
+
+            funnel_codes = []
+            for ft in d["funnels"]:
+                funnel_codes.extend(ft.get("override_codes", []))
+            funnel_str = ", ".join(funnel_codes) if funnel_codes else "—"
+
+            aff_codes = []
+            for at in d["aff_overrides"]:
+                aff_codes.append(f"{at.get('affiliate_id')}→{at.get('override_code')}")
+            aff_str = ", ".join(aff_codes) if aff_codes else "—"
+
+            sections.append(
+                f"*Broker:* {bid}\n"
+                f"Geo: {geo}\n"
+                f"Cap: {cap}\n"
+                f"WH: {wh}\n"
+                f"Aff ID override: {aff_str}\n"
+                f"Funnel override: {funnel_str}"
+            )
+
+        body = "\n\n".join(sections)
+        return f"📋 *Confirmation required*\n\n{body}\n\nConfirm?"
 
     if a == "funnel_slug_override":
         brokers = ", ".join(str(b) for b in action.get("broker_ids", []))
