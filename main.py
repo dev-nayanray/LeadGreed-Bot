@@ -602,7 +602,8 @@ Capitan, Legion, Fintrix CRG, Swin FR CRG, Swin FR CRG duplicate, Swin EN CRG, S
       "start": "09:00",
       "end": "18:00",
       "day": "Wednesday",
-      "no_traffic": true
+      "no_traffic": true,
+      "affiliate_ids": ["122", "191"]
     },
     {
       "type": "close_day",
@@ -618,7 +619,8 @@ Capitan, Legion, Fintrix CRG, Swin FR CRG, Swin FR CRG duplicate, Swin EN CRG, S
       "start": "11:00",
       "end": "19:00",
       "day": "Wednesday",
-      "no_traffic": true
+      "no_traffic": true,
+      "affiliate_ids": ["12"]
     }
   ]
 }
@@ -5526,6 +5528,15 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                         for a in affs:
                             if str(a) not in rotation_info[bid]["affs"]:
                                 rotation_info[bid]["affs"].append(str(a))
+                # Собираем оригинального аффа из affiliate_override (affiliate_id = кто реально шлёт трафик)
+                if task.get("type") == "affiliate_override":
+                    bid = task.get("broker_id", "")
+                    aff_id = str(task.get("affiliate_id", "") or "")
+                    if bid and aff_id:
+                        if bid not in rotation_info:
+                            rotation_info[bid] = {"affs": [], "country": broker_country_cache.get(bid, ""), "is_tomorrow": False}
+                        if aff_id not in rotation_info[bid]["affs"]:
+                            rotation_info[bid]["affs"].append(aff_id)
 
             for task in tasks:
                 if task.get("type") == "lead_task" and task.get("country") and task.get("broker_id"):
