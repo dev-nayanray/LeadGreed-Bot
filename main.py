@@ -151,6 +151,7 @@ SYSTEM_PROMPT = """
   "active": null,
   "amount": null,
   "override_code": null,
+  "override_codes": [],
   "funnel_countries": [],
   "country": null
 }
@@ -716,12 +717,17 @@ CRM работает в GMT+3. Если в сообщении указан др�
   ВАЖНО: "for DE", "for Germany", "for DE ES" и т.д. — это страны → funnel_countries. ISO коды после "for" — это всегда страны.
   ВАЖНО: "aff 123", "aff123", "affiliate 123" — это affiliate_id = "123". Число после "aff" — всегда аффилиат.
   Используй поле "funnel_countries" (не "countries"!) чтобы не путаться с другими правилами.
+  Если фаннел ОДИН — используй override_codes: ["Название"] (список из одного элемента).
+  Если фаннелов НЕСКОЛЬКО — все в одном списке override_codes, это одна запись в CRM.
   Примеры:
-  • "Nexus funnel override Pemex for DE" → {"action": "funnel_slug_override", "broker_ids": ["Nexus"], "override_code": "Pemex", "funnel_countries": ["Germany"], "affiliate_id": null}
-  • "Naga Joshua funnel override Pemex for DE aff 123" → {"action": "funnel_slug_override", "broker_ids": ["Naga Joshua"], "override_code": "Pemex", "funnel_countries": ["Germany"], "affiliate_id": "123"}
-  • "Nexus DE ES funnel Pemex" → {"action": "funnel_slug_override", "broker_ids": ["Nexus"], "override_code": "Pemex", "funnel_countries": ["Germany", "Spain"], "affiliate_id": null}
-  • "добавь фаннел Pemex для Nexus" → {"action": "funnel_slug_override", "broker_ids": ["Nexus"], "override_code": "Pemex", "funnel_countries": [], "affiliate_id": null}
-  override_code — точное название фаннела (текст, не число). Если страна не указана — funnel_countries: []
+  • "Nexus funnel override Pemex for DE" → {"action": "funnel_slug_override", "broker_ids": ["Nexus"], "override_codes": ["Pemex"], "funnel_countries": ["Germany"], "affiliate_id": null}
+  • "Naga Joshua funnel override Pemex for DE aff 123" → {"action": "funnel_slug_override", "broker_ids": ["Naga Joshua"], "override_codes": ["Pemex"], "funnel_countries": ["Germany"], "affiliate_id": "123"}
+  • "Funnels - FinanzBot KI, KI Trading" → override_codes: ["FinanzBot KI", "KI Trading"]
+  • "funnel to map - AI Trading App" → override_codes: ["AI Trading App"]
+  • "map funnel as Immediate Profit" → override_codes: ["Immediate Profit"]
+  • "Legion DE Funnels - FinanzBot KI, KI Trading aff 123" → {"action": "funnel_slug_override", "broker_ids": ["Legion"], "override_codes": ["FinanzBot KI", "KI Trading"], "funnel_countries": ["Germany"], "affiliate_id": "123"}
+  override_codes — список точных названий фаннелов (текст, не числа). Если страна не указана — funnel_countries: []
+  ВАЖНО: если команда содержит "last funnel from", "same funnel as", "funnel from X id" и т.д. — это запрос на чтение существующих фаннелов, бот не умеет это делать → action: "unknown"
 
 - Возвращай ТОЛЬКО JSON
 
@@ -3478,6 +3484,14 @@ async def action_add_affiliate_mapping(broker_id: str, affiliate_id: str,
             # Кликаем через JS — не держим ссылки на элементы
             clicked = await page.evaluate(f"""(countryName) => {{
                 const items = document.querySelectorAll('li.dropdown-item, li.flex-fill');
+                // Сначала точное совпадение
+                for (const item of items) {{
+                    if (item.innerText.trim().toLowerCase() === countryName.toLowerCase()) {{
+                        item.click();
+                        return item.innerText.trim();
+                    }}
+                }}
+                // Потом частичное
                 for (const item of items) {{
                     if (item.innerText.trim().toLowerCase().includes(countryName.toLowerCase())) {{
                         item.click();
@@ -3540,7 +3554,16 @@ async def action_add_affiliate_mapping(broker_id: str, affiliate_id: str,
             timeout=5000
         )
         await save_btn.click()
-        await page.wait_for_timeout(1200)
+        await page.wait_for_timeout(1000)
+
+        # Проверяем появился ли диалог "same override ID already exists" — нужно нажать CONFIRM
+        confirm_btn = await page.query_selector("button:has-text('CONFIRM'), .btn-primary:has-text('CONFIRM')")
+        if confirm_btn:
+            await confirm_btn.click()
+            log.info("Clicked CONFIRM for duplicate override ID dialog")
+            await page.wait_for_timeout(1000)
+
+        await page.wait_for_timeout(400)
 
         # Проверяем нет ли ошибки "record already exists"
         error_msg = await page.evaluate("""() => {
@@ -3572,7 +3595,7 @@ async def action_add_affiliate_mapping(broker_id: str, affiliate_id: str,
         return "⚠️ Save button not found."
 
 
-async def action_add_funnel_slug_override(broker_id: str, override_code: str,
+async def action_add_funnel_slug_override(broker_id: str, override_codes: list,
                                            countries: list = None, affiliate_id: str = None,
                                            slug: str = None) -> str:
     """Добавить API Offer Slug Override для брокера."""
@@ -3657,6 +3680,12 @@ async def action_add_funnel_slug_override(broker_id: str, override_code: str,
                 # Кликаем через JS
                 clicked = await page.evaluate(f"""(countryName) => {{
                     const items = document.querySelectorAll('li.dropdown-item, li.flex-fill');
+                    for (const item of items) {{
+                        if (item.innerText.trim().toLowerCase() === countryName.toLowerCase()) {{
+                            item.click();
+                            return item.innerText.trim();
+                        }}
+                    }}
                     for (const item of items) {{
                         if (item.innerText.trim().toLowerCase().includes(countryName.toLowerCase())) {{
                             item.click();
@@ -3762,34 +3791,35 @@ async def action_add_funnel_slug_override(broker_id: str, override_code: str,
         except Exception as e:
             log.warning(f"Could not select affiliate '{affiliate_id}': {e}")
 
-    # ── 3. Вводим Override (название фаннела) ─────────
+    # ── 3. Вводим Override codes (один или несколько) ─
     try:
-        code_input = await modal.query_selector(
-            "input[placeholder*='Add override'], input[placeholder*='override' i], input[id*='override']"
-        )
-        if not code_input:
-            code_input = await modal.query_selector("input.b-form-tags-input, input[class*='form-tags']")
+        for override_code in override_codes:
+            code_input = await modal.query_selector(
+                "input[placeholder*='Add override'], input[placeholder*='override' i], input[id*='override']"
+            )
+            if not code_input:
+                code_input = await modal.query_selector("input.b-form-tags-input, input[class*='form-tags']")
 
-        if not code_input:
-            await _close_modal(page)
-            return "❌ Overrides input field not found."
+            if not code_input:
+                await _close_modal(page)
+                return "❌ Overrides input field not found."
 
-        await code_input.click()
-        await page.wait_for_timeout(200)
-        await code_input.type(str(override_code), delay=60)
-        await page.wait_for_timeout(400)
+            await code_input.click()
+            await page.wait_for_timeout(200)
+            await code_input.type(str(override_code), delay=60)
+            await page.wait_for_timeout(400)
 
-        # Нажимаем ADD
-        add_code_btn = await modal.query_selector(
-            "button.btn-outline-secondary, button:has-text('Add')"
-        )
-        if add_code_btn:
-            await add_code_btn.click()
-            log.info(f"Clicked ADD for override: {override_code}")
-        else:
-            await code_input.press("Enter")
-            log.info(f"Pressed Enter for override: {override_code}")
-        await page.wait_for_timeout(400)
+            # Нажимаем ADD
+            add_code_btn = await modal.query_selector(
+                "button.btn-outline-secondary, button:has-text('Add')"
+            )
+            if add_code_btn:
+                await add_code_btn.click()
+                log.info(f"Clicked ADD for override: {override_code}")
+            else:
+                await code_input.press("Enter")
+                log.info(f"Pressed Enter for override: {override_code}")
+            await page.wait_for_timeout(400)
     except Exception as e:
         await _close_modal(page)
         return f"❌ Error entering override: {e}"
@@ -3802,7 +3832,16 @@ async def action_add_funnel_slug_override(broker_id: str, override_code: str,
             timeout=5000
         )
         await save_btn.click()
-        await page.wait_for_timeout(1200)
+        await page.wait_for_timeout(1000)
+
+        # Проверяем появился ли диалог "same override ID already exists" — нужно нажать CONFIRM
+        confirm_btn = await page.query_selector("button:has-text('CONFIRM'), .btn-primary:has-text('CONFIRM')")
+        if confirm_btn:
+            await confirm_btn.click()
+            log.info("Clicked CONFIRM for duplicate override ID dialog")
+            await page.wait_for_timeout(1000)
+
+        await page.wait_for_timeout(400)
 
         # Проверяем нет ли ошибки "record already exists"
         error_msg = await page.evaluate("""() => {
@@ -3822,13 +3861,14 @@ async def action_add_funnel_slug_override(broker_id: str, override_code: str,
             await _close_modal(page)
             countries_str_err = ", ".join(countries) if countries else "all countries"
             if error_msg.startswith('already_exists:'):
-                return f"⚠️ Record already exists ('{override_code}' for {countries_str_err} already set)"
+                return f"⚠️ Record already exists ('{', '.join(override_codes)}' for {countries_str_err} already set)"
             elif error_msg.startswith('not_sent:'):
                 return f"⚠️ Aff ID is not being sent to this broker"
 
         countries_str = ", ".join(countries) if countries else "all countries"
         aff_str = f" / aff {affiliate_id}" if affiliate_id else ""
-        log.info(f"Funnel override saved: {override_code} for {broker_id} / {countries_str}{aff_str}")
+        codes_str = ", ".join(override_codes)
+        log.info(f"Funnel override saved: {codes_str} for {broker_id} / {countries_str}{aff_str}")
 
         warnings = []
         if countries_failed:
@@ -3836,7 +3876,7 @@ async def action_add_funnel_slug_override(broker_id: str, override_code: str,
         if affiliate_id and not aff_selected:
             warnings.append(f"⚠️ Affiliate {affiliate_id} not selected (not found in list)")
 
-        result = f"✅ Funnel override '{override_code}' added for {countries_str}{aff_str}"
+        result = f"✅ Funnel override(s) '{codes_str}' added for {countries_str}{aff_str}"
         if warnings:
             result += "\n" + "\n".join(warnings)
         return result
@@ -4268,6 +4308,14 @@ async def action_change_caps(broker_id: str, country: str, cap_value: int = 0, d
                     ...document.querySelectorAll('li.dropdown-item'),
                     ...document.querySelectorAll('li.flex-fill'),
                 ];
+                // Сначала точное совпадение
+                for (const item of lists) {
+                    if (item.innerText.trim().toLowerCase() === countryName.toLowerCase()) {
+                        item.click();
+                        return item.innerText.trim();
+                    }
+                }
+                // Потом частичное
                 for (const item of lists) {
                     if (item.innerText.trim().toLowerCase().includes(countryName.toLowerCase())) {
                         item.click();
@@ -4278,23 +4326,39 @@ async def action_change_caps(broker_id: str, country: str, cap_value: int = 0, d
             }""", country)
             if country_selected:
                 log.info(f"Country selected via JS: {country_selected}")
+                actual_country = country_selected  # реальное имя выбранной страны
                 country_selected = True
                 await page.wait_for_timeout(400)
             else:
+                actual_country = country
                 # Fallback — Playwright query прямо перед кликом
                 items = await page.query_selector_all("li.dropdown-item, li.flex-fill")
                 log.info(f"Dropdown items: {len(items)}")
                 for item in items:
                     try:
                         txt = (await item.inner_text()).strip()
-                        if country.lower() in txt.lower():
+                        if country.lower() == txt.lower():
                             await item.click()
                             country_selected = True
+                            actual_country = txt
                             log.info(f"Country selected: {txt}")
                             await page.wait_for_timeout(400)
                             break
                     except Exception:
                         continue
+                if not country_selected:
+                    for item in items:
+                        try:
+                            txt = (await item.inner_text()).strip()
+                            if country.lower() in txt.lower():
+                                await item.click()
+                                country_selected = True
+                                actual_country = txt
+                                log.info(f"Country selected (partial): {txt}")
+                                await page.wait_for_timeout(400)
+                                break
+                        except Exception:
+                            continue
 
             if not country_selected:
                 await _close_modal(page)
@@ -5015,7 +5079,9 @@ def build_confirm_text(action: dict) -> str:
 
     if a == "funnel_slug_override":
         brokers = ", ".join(str(b) for b in action.get("broker_ids", []))
-        override_code = action.get("override_code", "?")
+        override_code = action.get("override_code", "")
+        override_codes = action.get("override_codes") or ([override_code] if override_code else [])
+        codes_str = ", ".join(override_codes) if override_codes else "?"
         countries_list = action.get("funnel_countries") or action.get("countries", [])
         countries_str = ", ".join(countries_list) if countries_list else "all countries"
         aff_id = action.get("affiliate_id")
@@ -5025,7 +5091,7 @@ def build_confirm_text(action: dict) -> str:
             f"Action: add funnel slug override\n"
             f"Broker: `{brokers}`\n"
             f"Countries: {countries_str}{aff_str}\n"
-            f"Override: `{override_code}`\n\n"
+            f"Override(s): `{codes_str}`\n\n"
             f"Confirm?"
         )
 
@@ -5583,15 +5649,16 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                         country=country
                     )
             elif a == "funnel_slug_override":
-                override_code = str(action.get("override_code", ""))
+                override_code = action.get("override_code", "")
+                override_codes = action.get("override_codes") or ([override_code] if override_code else [])
                 countries_list = action.get("funnel_countries") or action.get("countries", [])
                 aff_id = str(action.get("affiliate_id", "")) or None
-                if not override_code:
+                if not override_codes:
                     msg = "❌ Please specify funnel override code (name)."
                 else:
                     msg = await action_add_funnel_slug_override(
                         broker_id=str(broker_id),
-                        override_code=override_code,
+                        override_codes=override_codes,
                         countries=countries_list if countries_list else None,
                         affiliate_id=aff_id
                     )
