@@ -6845,42 +6845,46 @@ async def _fetch_last_funnel(affiliate_id: str, country: str) -> str:
     }
 
     try:
-        payload_json = json.dumps(payload)
-        result = await _page.evaluate(f"""async () => {{
-            try {{
-                const xsrf = document.cookie.split('; ').find(r => r.startsWith('XSRF-TOKEN='))?.split('=')[1];
-                const decodedXsrf = xsrf ? decodeURIComponent(xsrf) : '';
-                const resp = await fetch('/api/stats', {{
-                    method: 'POST',
-                    headers: {{
-                        'Content-Type': 'application/json',
-                        'Accept': 'application/json',
-                        'X-XSRF-TOKEN': decodedXsrf
-                    }},
-                    body: {json.dumps(payload_json)}
-                }});
-                if (!resp.ok) return null;
-                return await resp.json();
-            }} catch(e) {{ return null; }}
-        }}""")
+        for page_num in range(1, 6):  # ищем до 5 страниц
+            payload["page"] = page_num
+            payload_json = json.dumps(payload)
+            result = await _page.evaluate(f"""async () => {{
+                try {{
+                    const xsrf = document.cookie.split('; ').find(r => r.startsWith('XSRF-TOKEN='))?.split('=')[1];
+                    const decodedXsrf = xsrf ? decodeURIComponent(xsrf) : '';
+                    const resp = await fetch('/api/stats', {{
+                        method: 'POST',
+                        headers: {{
+                            'Content-Type': 'application/json',
+                            'Accept': 'application/json',
+                            'X-XSRF-TOKEN': decodedXsrf
+                        }},
+                        body: {json.dumps(payload_json)}
+                    }});
+                    if (!resp.ok) return null;
+                    return await resp.json();
+                }} catch(e) {{ return null; }}
+            }}""")
 
-        if not result:
-            log.warning(f"_fetch_last_funnel: empty response")
-            return ""
+            if not result:
+                break
 
-        leads = result.get("data", []) if isinstance(result, dict) else result
-        log.info(f"_fetch_last_funnel: leads count={len(leads)}")
+            leads = result.get("data", []) if isinstance(result, dict) else result
+            log.info(f"_fetch_last_funnel page {page_num}: leads count={len(leads)}")
 
-        for lead in leads:
-            # Фильтруем по affid и стране клиент-сайд
-            if lead.get("affid") != aff_id_int:
-                continue
-            if country and country.lower() not in (lead.get("country") or "").lower():
-                continue
-            slug = lead.get("funnel_slug_override") or lead.get("funnel") or ""
-            if slug and slug not in ("null", ""):
-                log.info(f"Last funnel for aff {affiliate_id} / {country}: {slug}")
-                return slug
+            for lead in leads:
+                if lead.get("affid") != aff_id_int:
+                    continue
+                if country and country.lower() not in (lead.get("country") or "").lower():
+                    continue
+                slug = lead.get("funnel_slug_override") or lead.get("funnel") or ""
+                if slug and slug not in ("null", ""):
+                    log.info(f"Last funnel for aff {affiliate_id} / {country}: {slug} (page {page_num})")
+                    return slug
+
+            # Если лидов меньше per_page — дальше нет смысла искать
+            if len(leads) < payload["per_page"]:
+                break
 
     except Exception as e:
         log.warning(f"_fetch_last_funnel error: {type(e).__name__}: {e}")
