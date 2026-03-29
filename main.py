@@ -6812,110 +6812,7 @@ def _country_flag(country: str) -> str:
 
 
 async def _fetch_last_funnel(affiliate_id: str, country: str) -> str:
-    """Найти последний фанел который использовал аффилиат для данной страны."""
-    import datetime as _dt
-
-    if not _page:
-        return ""
-
-    aff_id_int = int(affiliate_id) if str(affiliate_id).isdigit() else None
-    if not aff_id_int:
-        return ""
-
-    now = _dt.datetime.now()
-    from_dt = (now - _dt.timedelta(days=180)).strftime("%Y-%m-%d 00:00:00")
-    to_dt = now.strftime("%Y-%m-%d 23:59:59")
-
-    payload = {
-        "successfullLeadsOnly": False,
-        "hideDuplicateFailedLeads": False,
-        "activePresetName": None,
-        "activePresetConfig": {},
-        "origin": None,
-        "narrowDownAffiliate": aff_id_int,
-        "narrowDownCountry": country if country else None,
-        "narrowDownFunnel": None,
-        "narrowDownBroker": None,
-        "brokersType": "brokers",
-        "statusesType": "raw_statuses",
-        "pastStatusesType": "past_raw_statuses",
-        "brokersExclude": False,
-        "countriesExclude": False,
-        "affiliatesExclude": False,
-        "funnelsExclude": False,
-        "offersExclude": False,
-        "statusesExclude": False,
-        "past_statusesExclude": False,
-        "affiliate_sale_statuses_exclude": False,
-        "trafficType": "all",
-        "test_leads": "exclude",
-        "qc_leads": "all",
-        "insideHoursOnly": False,
-        "createdInsideDateRangeOnly": False,
-        "byStatusCreationDate": True,
-        "mobile": "all",
-        "weekendTraffic": "all",
-        "from_datetime": from_dt,
-        "to_datetime": to_dt,
-        "timezone": "Europe/Istanbul",
-        "page": 1,
-        "per_page": 100,
-        "breakdowns": [],
-        "ord": [{"field": "id", "direction": "desc"}],
-        "filter": {"isGlobalSearch": False, "globalSearchValues": [], "search": "", "searchType": "single", "searchBy": "email", "converted": "all", "successful": "all", "queued": "all"},
-        "fields": ["broker_name", "affiliate_name", "country", "funnel_slug_override", "funnel", "affid", "created_at"],
-        "from_page": "stats",
-        "aggregateFields": [
-            {"key": "id", "show": True},
-            {"key": "name", "show": True},
-            {"key": "total_leads", "show": True},
-        ],
-    }
-
-    try:
-        for page_num in range(1, 6):  # ищем до 5 страниц
-            payload["page"] = page_num
-            payload_json = json.dumps(payload)
-            result = await _page.evaluate(f"""async () => {{
-                try {{
-                    const xsrf = document.cookie.split('; ').find(r => r.startsWith('XSRF-TOKEN='))?.split('=')[1];
-                    const decodedXsrf = xsrf ? decodeURIComponent(xsrf) : '';
-                    const resp = await fetch('/api/stats', {{
-                        method: 'POST',
-                        headers: {{
-                            'Content-Type': 'application/json',
-                            'Accept': 'application/json',
-                            'X-XSRF-TOKEN': decodedXsrf
-                        }},
-                        body: {json.dumps(payload_json)}
-                    }});
-                    if (!resp.ok) return null;
-                    return await resp.json();
-                }} catch(e) {{ return null; }}
-            }}""")
-
-            if not result:
-                break
-
-            leads = result.get("data", []) if isinstance(result, dict) else result
-            log.info(f"_fetch_last_funnel page {page_num}: leads count={len(leads)}")
-
-            for lead in leads:
-                if lead.get("affid") != aff_id_int:
-                    continue
-                if country and country.lower() not in (lead.get("country") or "").lower():
-                    continue
-                slug = lead.get("funnel_slug_override") or lead.get("funnel") or ""
-                if slug and slug not in ("null", ""):
-                    log.info(f"Last funnel for aff {affiliate_id} / {country}: {slug} (page {page_num})")
-                    return slug
-
-            # Если лидов меньше per_page — дальше нет смысла искать
-            if len(leads) < payload["per_page"]:
-                break
-
-    except Exception as e:
-        log.warning(f"_fetch_last_funnel error: {type(e).__name__}: {e}")
+    """Найти последний фанел аффилиата для страны. Пока не реализовано."""
     return ""
 
 
@@ -7157,8 +7054,8 @@ async def _report_loop(bot):
                 fired_started.clear()
                 log.info(f"Midnight swap: today_rotations now has {len(today_rotations)} entries")
 
-            # Проверка "started" — каждую минуту если есть активные ротации
-            if today_rotations and 8 <= local_hour < 20:
+            # Проверка "started" — каждую минуту без ограничения по времени
+            if today_rotations:
                 unfired = [k for k in today_rotations if k not in fired_started]
                 if unfired:
                     broker_data = await _fetch_crm_stats("brokers")
