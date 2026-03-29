@@ -616,6 +616,14 @@ Capitan, Legion, Fintrix CRG, Swin FR CRG, Swin FR CRG duplicate, Swin EN CRG, S
   - "close_day" — закрыть день для страны
   - "funnel_override" — добавить фаннел маппинг (override_codes, funnel_countries, affiliate_ids или affiliate_id)
   - "affiliate_override" — добавить маппинг аффилиата (affiliate_id, override_code, country)
+    Если нужно замаппить НЕСКОЛЬКО аффов с одним override_code ("map as 123 all", "map all as 123") — создай отдельную задачу affiliate_override для каждого аффа из списка.
+    "map as 123 all" / "map all as 123" / "map as 123 in case we are sharing" → для каждого аффа из списка: {"type": "affiliate_override", "broker_id": ..., "affiliate_id": "XXX", "override_code": "123"}
+    Пример: "123/122/28 Legion ... map as 123 all" →
+    [
+      {"type": "affiliate_override", "broker_id": "Legion", "affiliate_id": "123", "override_code": "123"},
+      {"type": "affiliate_override", "broker_id": "Legion", "affiliate_id": "122", "override_code": "123"},
+      {"type": "affiliate_override", "broker_id": "Legion", "affiliate_id": "28",  "override_code": "123"}
+    ]
   - "close_day" — закрыть часы на этот день (PAUSED)
 
 Формат "desk-расписания":
