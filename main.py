@@ -3885,8 +3885,8 @@ async def action_add_funnel_slug_override(broker_id: str, override_codes: list,
 
         countries_str = ", ".join(countries) if countries else "all countries"
         aff_str = f" / aff {affiliate_id}" if affiliate_id else ""
-        codes_str = ", ".join(override_codes)
-        log.info(f"Funnel override saved: {codes_str} for {broker_id} / {countries_str}{aff_str}")
+        codes_str = " and ".join(f"'{c}'" for c in override_codes)
+        log.info(f"Funnel override saved: {', '.join(override_codes)} for {broker_id} / {countries_str}{aff_str}")
 
         warnings = []
         if countries_failed:
@@ -3894,7 +3894,7 @@ async def action_add_funnel_slug_override(broker_id: str, override_codes: list,
         if affiliate_id and not aff_selected:
             warnings.append(f"⚠️ Affiliate {affiliate_id} not selected (not found in list)")
 
-        result = f"✅ Funnel override(s) '{codes_str}' added for {countries_str}{aff_str}"
+        result = f"✅ funnels {codes_str} mapped for {countries_str}"
         if warnings:
             result += "\n" + "\n".join(warnings)
         return result
@@ -5270,6 +5270,11 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
             tasks = action.get("tasks", [])
             # Кэш base_path — ищем каждого брокера только один раз
             broker_base_cache: dict = {}
+            # Кэш стран — берём из lead_task для использования в других задачах
+            broker_country_cache: dict = {}
+            for task in tasks:
+                if task.get("type") == "lead_task" and task.get("country") and task.get("broker_id"):
+                    broker_country_cache[task["broker_id"]] = task["country"]
             for task in tasks:
                 t_type = task.get("type", "lead_task")
                 t_broker = task.get("broker_id", "")
@@ -5306,7 +5311,13 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
 
                     elif t_type == "funnel_override":
                         t_override_codes = task.get("override_codes", [])
-                        t_funnel_countries = task.get("funnel_countries") or ([t_country] if t_country else None)
+                        t_funnel_countries = task.get("funnel_countries") or []
+                        # Если страна не указана — берём из lead_task того же брокера
+                        if not t_funnel_countries:
+                            inherited = broker_country_cache.get(t_broker) or t_country
+                            if inherited:
+                                t_funnel_countries = [inherited]
+                        t_funnel_countries = t_funnel_countries or None
                         t_aff_ids = task.get("affiliate_ids", [])
                         t_aff_id = task.get("affiliate_id") or None
 
