@@ -422,6 +422,8 @@ SYSTEM_PROMPT = """
   • "2251 - Fugazi CH\n122 DE 1600 16%" → broker_id: "2251", country: "Germany", amount: 1600, affiliate_id: "122" (add_revenue)
   • "71\nBR 800" → affiliate_id: "71", country: "Brazil", amount: 800 (add_affiliate_revenue)
   • "159\nFR 1000\nES 1100" → affiliate_id: "159" (add_affiliate_revenue)
+  • "228 ID 650\n228 MY 1150" → affiliate_id: "228", country_revenues: [{"country": "Indonesia", "amount": 650}, {"country": "Malaysia", "amount": 1150}] (add_affiliate_revenue)
+    ВАЖНО: здесь "ID" = Indonesia (ISO код), НЕ идентификатор! "228" = аффилиат, "ID" = страна, "650" = сумма.
   Одна сумма на несколько стран → country_revenues с одинаковым amount для каждой страны.
   → {"action": "add_affiliate_revenue", "affiliate_id": "159", "broker_ids": ["159"],
      "country_revenues": [{"country": "Colombia", "amount": 650}, {"country": "Chile", "amount": 650}]}
@@ -615,6 +617,9 @@ Capitan, Legion, Fintrix CRG, Swin FR CRG, Swin FR CRG duplicate, Swin EN CRG, S
   - "lead_task" — поставить часы + капу (cap может быть null если только часы)
   - "close_day" — закрыть день для страны
   - "funnel_override" — добавить фаннел маппинг (override_codes, funnel_countries, affiliate_ids или affiliate_id)
+    Триггеры для funnel_override: "Funnel - X", "Funnels - X", "Funnels to map: X", "map funnel X", "funnel X", "mapping X", "Funnel mapping X" — ВСЕГДА создавай задачу funnel_override, даже если рядом есть фразы типа "same as prev week", "as usual", "like before" и т.д.
+    Фраза "same as prev week" / "as usual" — НЕ означает пропустить маппинг, а просто уточнение от пользователя. Маппинг всё равно нужно выполнить.
+    Affiliate IDs для фаннела берутся из числового префикса сообщения (например "225 UK CRG" → affiliate_ids: ["225"]).
   - "affiliate_override" — добавить маппинг аффилиата (affiliate_id, override_code, country)
     Если нужно замаппить НЕСКОЛЬКО аффов с одним override_code ("map as 123 all", "map all as 123") — создай отдельную задачу affiliate_override для каждого аффа из списка.
     "map as 123 all" / "map all as 123" / "map as 123 in case we are sharing" → для каждого аффа из списка: {"type": "affiliate_override", "broker_id": ..., "affiliate_id": "XXX", "override_code": "123"}
