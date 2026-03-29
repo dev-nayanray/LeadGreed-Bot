@@ -494,6 +494,8 @@ SYSTEM_PROMPT = """
 Правила разбора:
 - Первая строка содержит метаданные. Разбирай так:
   • Числа в начале (17) — affiliate id → сохраняй в поле "affiliate_ids": ["17"] в lead_task
+  • Пример: "12 AU CRG for tomorrow to Swin..." → lead_task должен содержать "affiliate_ids": ["12"]
+  • Пример: "122/191 DE CRG for tomorrow to Legion..." → lead_task должен содержать "affiliate_ids": ["122", "191"]
   • ISO коды стран (CA, DE, BR...) — переводи в полное название → country
   • Языки (EN, RU, PL...) — ИГНОРИРУЙ (это язык деска, не страна)
   • Тип сделки (CPA, CRG) — запомни тип, используй для определения нужен ли affiliate_id в капе
