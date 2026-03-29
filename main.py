@@ -6813,22 +6813,15 @@ def _country_flag(country: str) -> str:
 
 async def _fetch_last_funnel(affiliate_id: str, country: str) -> str:
     """Найти последний фанел который использовал аффилиат для данной страны."""
-    import aiohttp
-    import urllib.parse
     import datetime as _dt
 
-    if not _context:
+    if not _page:
         return ""
 
-    cookies_list = await _context.cookies()
-    cookies = {c["name"]: c["value"] for c in cookies_list}
-    xsrf = cookies.get("XSRF-TOKEN", "")
-    try:
-        xsrf = urllib.parse.unquote(xsrf)
-    except Exception:
-        pass
+    aff_id_int = int(affiliate_id) if str(affiliate_id).isdigit() else None
+    if not aff_id_int:
+        return ""
 
-    # Ищем за последние 6 месяцев
     now = _dt.datetime.now()
     from_dt = (now - _dt.timedelta(days=180)).strftime("%Y-%m-%d 00:00:00")
     to_dt = now.strftime("%Y-%m-%d 23:59:59")
@@ -6839,51 +6832,45 @@ async def _fetch_last_funnel(affiliate_id: str, country: str) -> str:
         "timezone": "Europe/Istanbul",
         "test_leads": "exclude",
         "page": 1,
-        "per_page": 10,
+        "per_page": 100,
         "breakdowns": [],
         "trafficType": "all",
-        "ord": [{"field": "id", "direction": "desc"}],  # последний лид первым
+        "ord": [{"field": "id", "direction": "desc"}],
         "filter": {"isGlobalSearch": False, "globalSearchValues": [], "search": "", "searchType": "single", "searchBy": "email", "converted": "all", "successful": "all", "queued": "all"},
         "fields": ["affiliate_name", "country", "funnel_slug_override", "funnel", "affid"],
-        "narrowDownAffiliate": int(affiliate_id) if str(affiliate_id).isdigit() else None,
+        "narrowDownAffiliate": aff_id_int,
         "narrowDownCountry": country if country else None,
         "narrowDownBroker": None,
         "from_page": "stats",
     }
 
-    headers = {
-        "Content-Type": "application/json;charset=utf-8",
-        "Accept": "application/json, text/plain, */*",
-        "X-XSRF-TOKEN": xsrf,
-        "Referer": f"{CRM_URL}/stats/details",
-        "Origin": CRM_URL,
-    }
-
     try:
-        async with aiohttp.ClientSession(cookies=cookies) as session:
-            async with session.post(
-                f"{CRM_URL}/api/stats",
-                json=payload,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=30),
-                ssl=False
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    leads = data.get("data", []) if isinstance(data, dict) else data
-                    log.info(f"_fetch_last_funnel: status=200, leads count={len(leads)}, first={leads[0] if leads else 'none'}")
-                    aff_id_int = int(affiliate_id) if str(affiliate_id).isdigit() else None
-                    for lead in leads:
-                        if lead.get("affid") != aff_id_int:
-                            continue
-                        lead_country = lead.get("country", "")
-                        if country.lower() not in lead_country.lower():
-                            continue
-                        # Берём funnel_slug_override если есть, иначе funnel
-                        slug = lead.get("funnel_slug_override") or lead.get("funnel") or ""
-                        if slug and slug not in ("null", ""):
-                            log.info(f"Last funnel for aff {affiliate_id} / {country}: {slug}")
-                            return slug
+        payload_json = json.dumps(payload)
+        result = await _page.evaluate(f"""async () => {{
+            try {{
+                const resp = await fetch('/api/stats', {{
+                    method: 'POST',
+                    headers: {{'Content-Type': 'application/json', 'Accept': 'application/json'}},
+                    body: {json.dumps(payload_json)}
+                }});
+                if (!resp.ok) return null;
+                return await resp.json();
+            }} catch(e) {{ return null; }}
+        }}""")
+
+        if not result:
+            log.warning(f"_fetch_last_funnel: empty response")
+            return ""
+
+        leads = result.get("data", []) if isinstance(result, dict) else result
+        log.info(f"_fetch_last_funnel: leads count={len(leads)}")
+
+        for lead in leads:
+            slug = lead.get("funnel_slug_override") or lead.get("funnel") or ""
+            if slug and slug not in ("null", ""):
+                log.info(f"Last funnel for aff {affiliate_id} / {country}: {slug}")
+                return slug
+
     except Exception as e:
         log.warning(f"_fetch_last_funnel error: {type(e).__name__}: {e}")
     return ""
