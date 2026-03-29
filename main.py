@@ -6845,8 +6845,8 @@ async def _fetch_last_funnel(affiliate_id: str, country: str) -> str:
         "ord": [{"field": "id", "direction": "desc"}],  # последний лид первым
         "filter": {"isGlobalSearch": False, "globalSearchValues": [], "search": "", "searchType": "single", "searchBy": "email", "converted": "all", "successful": "all", "queued": "all"},
         "fields": ["affiliate_name", "country", "funnel_slug_override", "funnel", "affid"],
-        "narrowDownAffiliate": None,
-        "narrowDownCountry": None,
+        "narrowDownAffiliate": int(affiliate_id) if str(affiliate_id).isdigit() else None,
+        "narrowDownCountry": country if country else None,
         "narrowDownBroker": None,
         "from_page": "stats",
     }
