@@ -3836,7 +3836,7 @@ async def action_add_funnel_slug_override(broker_id: str, override_codes: list,
                 await page.wait_for_selector("li.dropdown-item, li.flex-fill", timeout=3000)
             except Exception:
                 pass
-            await page.wait_for_timeout(200)
+            await page.wait_for_timeout(500)
             aff_search = await page.evaluate("""() => {
                 const labels = document.querySelectorAll('.modal label, [role=dialog] label');
                 for (const lbl of labels) {
@@ -3888,6 +3888,8 @@ async def action_add_funnel_slug_override(broker_id: str, override_codes: list,
                 log.info(f"Selected affiliate: {clicked_aff}")
             else:
                 log.warning(f"Affiliate '{affiliate_id}' not found in list")
+                await _close_modal(page)
+                return f"⚠️ Affiliate {affiliate_id} not found — skipped"
             await page.wait_for_timeout(400)
         except Exception as e:
             log.warning(f"Could not select affiliate '{affiliate_id}': {e}")
@@ -6411,9 +6413,11 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action.get("action") in ("add_revenue", "add_affiliate_revenue", "set_prices", "bulk_schedule", "multi_broker_task"):
         queue_size = _task_queue.qsize()
         is_busy = _worker_busy or queue_size > 0
-        if is_busy and not is_group:
+        if is_busy:
             position = queue_size + (1 if _worker_busy else 0) + 1
             await update.message.reply_text(f"⏳ Queued, position #{position}…", disable_notification=True)
+        else:
+            await update.message.reply_text("⏳ Working on it…", disable_notification=True)
         action["_user_command"] = text
         await enqueue(_execute_confirmed_task, context.bot, chat_id, action)
         return
