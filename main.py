@@ -3665,6 +3665,7 @@ async def action_add_affiliate_mapping(broker_id: str, affiliate_id: str,
             return null;
         }""")
         if error_msg:
+            log.info(f"CRM noty detected after SAVE: {error_msg[:80]}")
             await _close_modal(page)
             if error_msg.startswith('already_exists:'):
                 return f"⚠️ Record already exists (aff {affiliate_id}{f' / {country}' if country else ''} already mapped)"
@@ -3958,6 +3959,7 @@ async def action_add_funnel_slug_override(broker_id: str, override_codes: list,
             return null;
         }""")
         if error_msg:
+            log.info(f"CRM noty detected after SAVE: {error_msg[:80]}")
             await _close_modal(page)
             countries_str_err = ", ".join(countries) if countries else "all countries"
             if error_msg.startswith('already_exists:'):
