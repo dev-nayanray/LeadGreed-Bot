@@ -3788,8 +3788,28 @@ async def action_add_funnel_slug_override(broker_id: str, override_codes: list,
                     log.info(f"Selected country: {clicked}")
                     countries_selected.append(country)
                 else:
-                    log.warning(f"Country '{country}' not found")
-                    countries_failed.append(country)
+                    # Пробуем короткий вариант (первое слово)
+                    short = country.split()[0] if ' ' in country else country[:4]
+                    if inp_el:
+                        await inp_el.click(click_count=3)
+                        await inp_el.type(short, delay=60)
+                        await page.wait_for_timeout(700)
+                    clicked = await page.evaluate(f"""(countryName) => {{
+                        const items = document.querySelectorAll('li.dropdown-item, li.flex-fill');
+                        for (const item of items) {{
+                            if (item.innerText.trim().toLowerCase().includes(countryName.toLowerCase())) {{
+                                item.click();
+                                return item.innerText.trim();
+                            }}
+                        }}
+                        return null;
+                    }}""", short)
+                    if clicked:
+                        log.info(f"Selected country (short search '{short}'): {clicked}")
+                        countries_selected.append(country)
+                    else:
+                        log.warning(f"Country '{country}' not found (tried full + '{short}')")
+                        countries_failed.append(country)
                 await page.wait_for_timeout(300)
 
             # Закрываем Country дропдаун — повторный клик
@@ -3873,12 +3893,29 @@ async def action_add_funnel_slug_override(broker_id: str, override_codes: list,
                 log.info(f"Affiliate search typed via keyboard: {affiliate_id}")
             await page.wait_for_timeout(900)
 
+            # Ждём пока список отфильтруется (должно стать < 10 элементов)
+            for _ in range(15):
+                await page.wait_for_timeout(200)
+                cnt = await page.evaluate("() => document.querySelectorAll('li.dropdown-item, li.flex-fill').length")
+                if 0 < cnt < 10:
+                    break
+
             # Кликаем через JS
             clicked_aff = await page.evaluate(f"""(affId) => {{
                 const items = document.querySelectorAll('li.dropdown-item, li.flex-fill');
                 for (const item of items) {{
                     const txt = item.innerText.trim();
-                    if (txt.includes('(' + affId + ')') || txt.startsWith('*' + affId)) {{
+                    // Точное совпадение: (225) или *225 или начинается с "225 "
+                    if (txt.includes('(' + affId + ')') || txt.startsWith('*' + affId) || txt.startsWith(affId + ' ') || txt.startsWith(affId + '-')) {{
+                        item.click();
+                        return txt;
+                    }}
+                }}
+                // Частичное: число встречается в тексте как отдельное слово
+                for (const item of items) {{
+                    const txt = item.innerText.trim();
+                    const re = new RegExp('\\\\b' + affId + '\\\\b');
+                    if (re.test(txt)) {{
                         item.click();
                         return txt;
                     }}
