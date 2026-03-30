@@ -7241,9 +7241,13 @@ async def _build_report() -> str:
             aff_counts[aff_key] = aff_counts.get(aff_key, 0) + 1
 
         total = sum(aff_counts.values())
+        cap = info.get("cap")
         log.info(f"_build_report MATCH: broker={broker_name!r} country={country!r} → matched {total} leads, aff_counts={aff_counts}")
         lines.append(f"{flag} *{country_iso}* — {broker_name}")
-        lines.append(f"  Leads: {total}")
+        if cap:
+            lines.append(f"  Leads: {total}/{cap}")
+        else:
+            lines.append(f"  Leads: {total}")
 
         # Сначала аффы из ротации
         shown = set()
