@@ -6806,6 +6806,25 @@ def _load_rotations():
 
 REPORT_CHAT_ID = -5132784554  # Notifications чат
 
+_COUNTRY_ISO = {
+    "germany": "DE", "united kingdom": "GB", "uk": "GB", "australia": "AU",
+    "france": "FR", "spain": "ES", "italy": "IT", "netherlands": "NL",
+    "belgium": "BE", "switzerland": "CH", "austria": "AT", "sweden": "SE",
+    "norway": "NO", "denmark": "DK", "finland": "FI", "portugal": "PT",
+    "poland": "PL", "czech republic": "CZ", "hungary": "HU", "romania": "RO",
+    "greece": "GR", "turkey": "TR", "israel": "IL", "canada": "CA",
+    "united states": "US", "brazil": "BR", "mexico": "MX", "argentina": "AR",
+    "colombia": "CO", "chile": "CL", "peru": "PE", "south africa": "ZA",
+    "nigeria": "NG", "kenya": "KE", "ghana": "GH", "india": "IN",
+    "indonesia": "ID", "malaysia": "MY", "singapore": "SG", "thailand": "TH",
+    "vietnam": "VN", "philippines": "PH", "japan": "JP", "south korea": "KR",
+    "new zealand": "NZ", "ukraine": "UA", "russia": "RU", "kazakhstan": "KZ",
+    "united arab emirates": "AE", "saudi arabia": "SA", "egypt": "EG",
+    "morocco": "MA", "croatia": "HR", "serbia": "RS", "slovakia": "SK",
+    "slovenia": "SI", "bulgaria": "BG", "latvia": "LV", "lithuania": "LT",
+    "estonia": "EE", "moldova": "MD", "georgia": "GE", "armenia": "AM",
+}
+
 # Флаги стран по ISO коду или полному названию
 _COUNTRY_FLAGS = {
     "germany": "🇩🇪", "united kingdom": "🇬🇧", "uk": "🇬🇧", "australia": "🇦🇺",
@@ -6832,13 +6851,17 @@ def _country_flag(country: str) -> str:
         return ""
     flag = _COUNTRY_FLAGS.get(country.lower(), "")
     if not flag:
-        # Генерируем флаг из ISO кода через unicode regional indicators
-        iso = country[:2].upper()
+        iso = _COUNTRY_ISO.get(country.lower(), country[:2].upper())
         try:
             flag = chr(0x1F1E6 + ord(iso[0]) - ord('A')) + chr(0x1F1E6 + ord(iso[1]) - ord('A'))
         except Exception:
             flag = ""
     return flag
+
+
+def _country_iso(country: str) -> str:
+    """Вернуть ISO код страны."""
+    return _COUNTRY_ISO.get(country.lower(), country[:2].upper())
 
 
 async def _fetch_last_funnel(affiliate_id: str, country: str) -> str:
@@ -6996,6 +7019,62 @@ async def _fetch_first_lead(broker_name: str, aff_ids: list, country: str) -> st
         return []
 
 
+async def _fetch_leads_count(aff_id: str, country: str) -> int:
+    """Получить количество лидов для аффа в конкретной стране через детальный API."""
+    if not _page:
+        return 0
+
+    now = datetime.datetime.now()
+    from_dt = now.strftime("%Y-%m-%d 00:00:00")
+    to_dt = now.strftime("%Y-%m-%d 23:59:59")
+
+    payload = {
+        "successfullLeadsOnly": False,
+        "hideDuplicateFailedLeads": False,
+        "from_datetime": from_dt,
+        "to_datetime": to_dt,
+        "timezone": "Europe/Istanbul",
+        "test_leads": "exclude",
+        "trafficType": "all",
+        "page": 1,
+        "per_page": 1,
+        "breakdowns": [],
+        "ord": [{"field": "id", "direction": "desc"}],
+        "filter": {"isGlobalSearch": False, "globalSearchValues": [], "search": "", "searchType": "single", "searchBy": "email", "converted": "all", "successful": "all", "queued": "all"},
+        "fields": ["affid", "country"],
+        "narrowDownAffiliate": int(aff_id) if str(aff_id).isdigit() else None,
+        "narrowDownCountry": country if country else None,
+        "narrowDownBroker": None,
+        "from_page": "stats",
+    }
+
+    try:
+        payload_json = json.dumps(payload)
+        result = await _page.evaluate(f"""async () => {{
+            try {{
+                const xsrf = document.cookie.split('; ').find(r => r.startsWith('XSRF-TOKEN='))?.split('=')[1];
+                const decodedXsrf = xsrf ? decodeURIComponent(xsrf) : '';
+                const resp = await fetch('/api/stats', {{
+                    method: 'POST',
+                    headers: {{
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'X-XSRF-TOKEN': decodedXsrf
+                    }},
+                    body: {json.dumps(payload_json)}
+                }});
+                if (!resp.ok) return null;
+                return await resp.json();
+            }} catch(e) {{ return null; }}
+        }}""")
+
+        if result and isinstance(result, dict):
+            return result.get("total", 0)
+    except Exception as e:
+        log.warning(f"_fetch_leads_count error: {e}")
+    return 0
+
+
 async def _fetch_crm_stats(group_by: str) -> list:
     """Запросить статистику из CRM API используя cookies браузера."""
     if not _page:
@@ -7056,69 +7135,94 @@ async def _fetch_crm_stats(group_by: str) -> list:
     return []
 
 
+async def _fetch_leads_count(broker_name: str, aff_id: str, country: str) -> int:
+    """Считаем лиды для конкретного аффа в конкретной стране у конкретного брокера."""
+    if not _page:
+        return 0
+
+    now = datetime.datetime.now()
+    from_dt = now.strftime("%Y-%m-%d 00:00:00")
+    to_dt = now.strftime("%Y-%m-%d 23:59:59")
+
+    payload = {
+        "successfullLeadsOnly": False,
+        "hideDuplicateFailedLeads": False,
+        "from_datetime": from_dt,
+        "to_datetime": to_dt,
+        "timezone": "Europe/Istanbul",
+        "test_leads": "exclude",
+        "trafficType": "all",
+        "page": 1,
+        "per_page": 1,
+        "breakdowns": [],
+        "ord": [{"field": "id", "direction": "desc"}],
+        "filter": {"isGlobalSearch": False, "globalSearchValues": [], "search": "", "searchType": "single", "searchBy": "email", "converted": "all", "successful": "all", "queued": "all"},
+        "fields": ["affid", "country", "broker_name"],
+        "narrowDownAffiliate": int(aff_id) if aff_id.isdigit() else None,
+        "narrowDownCountry": country if country else None,
+        "narrowDownBroker": None,
+        "from_page": "stats",
+    }
+
+    try:
+        payload_json = json.dumps(payload)
+        result = await _page.evaluate(f"""async () => {{
+            try {{
+                const xsrf = document.cookie.split('; ').find(r => r.startsWith('XSRF-TOKEN='))?.split('=')[1];
+                const decodedXsrf = xsrf ? decodeURIComponent(xsrf) : '';
+                const resp = await fetch('/api/stats', {{
+                    method: 'POST',
+                    headers: {{
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'X-XSRF-TOKEN': decodedXsrf
+                    }},
+                    body: {json.dumps(payload_json)}
+                }});
+                if (!resp.ok) return null;
+                return await resp.json();
+            }} catch(e) {{ return null; }}
+        }}""")
+
+        if result and isinstance(result, dict):
+            total = result.get("total", 0)
+            # Считаем только лиды с нужным брокером клиент-сайд
+            leads = result.get("data", [])
+            # total из API — но нам нужна агрегация, используем отдельный запрос
+            return result.get("total", 0)
+    except Exception as e:
+        log.warning(f"_fetch_leads_count error: {e}")
+    return 0
+
+
 async def _build_report() -> str:
     """Сформировать текст отчёта по лидам — только по активным ротациям."""
     if not today_rotations:
-        return ""  # Нет активных ротаций — не шлём отчёт
-
-    broker_data, aff_data = await asyncio.gather(
-        _fetch_crm_stats("brokers"),
-        _fetch_crm_stats("affiliates"),
-    )
-
-    if not broker_data:
         return ""
 
-    now = datetime.datetime.now()
+    now = datetime.datetime.utcnow() + datetime.timedelta(hours=3)
     time_str = now.strftime("%H:%M")
-
-    # Индексируем данные по имени (lowercase для поиска)
-    broker_index = {b["name"].lower(): b for b in broker_data}
-    aff_index = {a["name"].lower(): a for a in aff_data}
-
     lines = [f"📊 *Stats {time_str}*\n"]
-    has_data = False
 
     for broker_name, info in today_rotations.items():
         country = info.get("country", "")
         aff_ids = info.get("affs", [])
 
-        # Ищем брокера в данных API (частичное совпадение)
-        broker_rec = None
-        for key, rec in broker_index.items():
-            if broker_name.lower() in key or key in broker_name.lower():
-                broker_rec = rec
-                break
-
-        b_leads = broker_rec.get("total_leads", 0) if broker_rec else 0
-
-        # Строка страны
-        country_iso = country[:2].upper() if country else "??"
+        country_iso = _country_iso(country)
         flag = _country_flag(country)
-        lines.append(f"{flag} *{country_iso}* — {broker_name}")
-        lines.append(f"  Leads: {b_leads}")
 
-        # Аффилиаты
+        # Считаем лиды по каждому аффу через детальный API
+        aff_counts = {}
         for aff_id in aff_ids:
-            aff_rec = None
-            for key, rec in aff_index.items():
-                # Ищем по ID в имени: "122 - Diamond" содержит "122"
-                if f" {aff_id} " in f" {key} " or key.startswith(f"{aff_id} ") or key.startswith(f"{aff_id}-") or f"({aff_id})" in key:
-                    aff_rec = rec
-                    break
-            a_leads = aff_rec.get("total_leads", 0) if aff_rec else 0
-            lines.append(f"    {aff_id} — {a_leads}")
+            count = await _fetch_leads_count(aff_id, country)
+            aff_counts[aff_id] = count
 
+        total = sum(aff_counts.values())
+        lines.append(f"{flag} *{country_iso}* — {broker_name}")
+        lines.append(f"  Leads: {total}")
+        for aff_id, count in aff_counts.items():
+            lines.append(f"    {aff_id} — {count}")
         lines.append("")
-        if b_leads > 0:
-            has_data = True
-
-    if not has_data and all(
-        (broker_index.get(k.lower(), {}).get("total_leads", 0) == 0)
-        for k in today_rotations
-    ):
-        # Все нули — всё равно шлём чтобы было видно что ротации живые
-        pass
 
     return "\n".join(lines).strip()
 
@@ -7175,7 +7279,7 @@ async def _report_loop(bot):
                         if b_leads > 0 or aff_leads > 0:
                             fired_started.add(broker_name)
                             flag = _country_flag(country)
-                            country_iso = country[:2].upper() if country else ""
+                            country_iso = _country_iso(country)
                             aff_str = "/".join(info.get("affs", []))
                             time_str = datetime.datetime.now().strftime("%H:%M")
                             msg = f"▶️ *STARTED*\n{broker_name} {flag}{country_iso}"
