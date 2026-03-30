@@ -11,4 +11,3 @@ cat > /root/auto-b2026/rotations_today.json << 'EOF'
   ]
 }
 EOF
-cd /root/auto-b2026 && git pull && pm2 restart autob2026-bot
