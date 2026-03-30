@@ -5610,14 +5610,14 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                 else:
                                     display_name = _last_broker_full_name if _last_broker_full_name != t_broker else t_broker
                                     if display_name not in broker_lines: broker_lines[display_name] = []
-                                    broker_lines[display_name].append(f"📝 Mapping: ❌ Could not find last funnel for aff {ref_aff} / {ref_country}")
+                                    broker_lines[display_name].append(f"📝 Funnel mapping: ❌ Could not find last funnel for aff {ref_aff} / {ref_country}")
                                     continue
 
                         if not t_override_codes:
                             funnel_msg = "❌ No override codes specified"
                             display_name = _last_broker_full_name if _last_broker_full_name != t_broker else t_broker
                             if display_name not in broker_lines: broker_lines[display_name] = []
-                            broker_lines[display_name].append(f"📝 Mapping: {funnel_msg}")
+                            broker_lines[display_name].append(f"📝 Funnel mapping: {funnel_msg}")
                         elif t_aff_ids:
                             sub_parts = []
                             for one_aff in t_aff_ids:
@@ -5631,7 +5631,7 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                 sub_parts.append(f"aff {one_aff}: {sub_msg}")
                             display_name = _last_broker_full_name if _last_broker_full_name != t_broker else t_broker
                             if display_name not in broker_lines: broker_lines[display_name] = []
-                            broker_lines[display_name].append("📝 Mapping: " + "\n".join(sub_parts))
+                            broker_lines[display_name].append("📝 Funnel mapping: " + "\n".join(sub_parts))
                             alog.update_action(lid, "success", "; ".join(sub_parts)[:200])
                         else:
                             funnel_msg = await action_add_funnel_slug_override(
@@ -5643,7 +5643,7 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                             )
                             display_name = _last_broker_full_name if _last_broker_full_name != t_broker else t_broker
                             if display_name not in broker_lines: broker_lines[display_name] = []
-                            broker_lines[display_name].append(f"📝 Mapping: {funnel_msg}")
+                            broker_lines[display_name].append(f"📝 Funnel mapping: {funnel_msg}")
                             alog.update_action(lid, "success" if "✅" in funnel_msg else "error", funnel_msg[:200])
 
                     elif t_type == "affiliate_override":
@@ -7257,13 +7257,14 @@ async def _build_report() -> str:
         shown = set()
         for aff_id in rotation_affs:
             count = aff_counts.get(aff_id, 0)
-            lines.append(f"    {aff_id} — {count}")
+            warn = " ⚠️" if count == 0 else ""
+            lines.append(f"    {aff_id} — {count}{warn}")
             shown.add(aff_id)
 
         # Потом остальные аффы (вне ротации) — если есть лиды
         for aff_id, count in sorted(aff_counts.items(), key=lambda x: -x[1]):
             if aff_id not in shown and count > 0:
-                lines.append(f"    {aff_id} — {count} ⚠️")
+                lines.append(f"    {aff_id} — {count}")
                 shown.add(aff_id)
 
         lines.append("")
