@@ -7249,6 +7249,16 @@ async def _report_loop(bot):
     while True:
         try:
             await asyncio.sleep(60)
+
+            # Ensure browser is initialized (needed for aiohttp cookies)
+            if not _context:
+                try:
+                    await get_page()
+                    log.info("Report loop: browser initialized")
+                except Exception as e:
+                    log.warning(f"Report loop: browser init failed: {e}")
+                    continue
+
             now = datetime.datetime.utcnow()
             local_hour = (now.hour + 3) % 24
             local_minute = now.minute
