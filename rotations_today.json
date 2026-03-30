@@ -1,13 +1,13 @@
 cat > /root/auto-b2026/rotations_today.json << 'EOF'
 {
   "rotations": {
-    "1192 - Legion 🟩": {"affs": ["122", "191"], "country": "Germany"},
-    "2251 - Fugazi CH - CRG 🟩": {"affs": ["225"], "country": "United Kingdom"},
-    "2212 - Swinftd CRG ENG 🟩": {"affs": ["12"], "country": "Australia"}
+    "1192 - Legion \ud83d\udfe9": {"affs": ["122", "191"], "country": "Germany"},
+    "2251 - Fugazi CH - CRG \ud83d\udfe9": {"affs": ["225"], "country": "United Kingdom"},
+    "2212 - Swinftd CRG ENG \ud83d\udfe9": {"affs": ["12"], "country": "Australia"}
   },
   "fired_started": [
-    "1192 - Legion 🟩",
-    "2212 - Swinftd CRG ENG 🟩"
+    "1192 - Legion \ud83d\udfe9",
+    "2212 - Swinftd CRG ENG \ud83d\udfe9"
   ]
 }
 EOF
