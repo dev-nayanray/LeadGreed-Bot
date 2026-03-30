@@ -7167,7 +7167,8 @@ async def _fetch_crm_stats(group_by: str) -> list:
 
 async def _build_report() -> str:
     """Сформировать текст отчёта по лидам — только по активным ротациям.
-    Один запрос за все лиды дня → клиент-сайд подсчёт по affid + country + broker.
+    Один запрос за все лиды дня → клиент-сайд подсчёт по country + broker.
+    Показывает ВСЕ аффы которые шлют лиды брокеру в эту страну.
     """
     if not today_rotations:
         return ""
@@ -7175,12 +7176,12 @@ async def _build_report() -> str:
     all_leads = await _fetch_all_leads_today()
     log.info(f"_build_report: {len(all_leads)} total leads fetched for client-side filtering")
 
-    # Собираем все aff_ids из ротаций (int для сравнения)
-    rotation_aff_ids = set()
-    for info in today_rotations.values():
-        for a in info.get("affs", []):
-            if str(a).isdigit():
-                rotation_aff_ids.add(int(a))
+    # DEBUG: показываем формат данных для отладки
+    if all_leads:
+        sample = all_leads[0]
+        log.info(f"_build_report SAMPLE lead: country={sample.get('country')!r} broker={sample.get('broker_name')!r} affid={sample.get('affid')!r}")
+    for bname, binfo in today_rotations.items():
+        log.info(f"_build_report ROTATION: broker={bname!r} country={binfo.get('country')!r} affs={binfo.get('affs')!r}")
 
     now = datetime.datetime.utcnow() + datetime.timedelta(hours=3)
     time_str = now.strftime("%H:%M")
@@ -7188,18 +7189,14 @@ async def _build_report() -> str:
 
     for broker_name, info in today_rotations.items():
         country = info.get("country", "")
-        aff_ids = info.get("affs", [])
-        aff_ids_int = [int(a) for a in aff_ids if str(a).isdigit()]
+        rotation_affs = info.get("affs", [])
 
         country_iso = _country_iso(country)
         flag = _country_flag(country)
 
-        # Клиент-сайд подсчёт: совпадение affid + country + broker
-        aff_counts = {a: 0 for a in aff_ids}
+        # Считаем ВСЕ лиды для broker+country, группируем по affid
+        aff_counts = {}
         for lead in all_leads:
-            lead_affid = lead.get("affid")
-            if lead_affid not in aff_ids_int:
-                continue
             # Проверяем страну
             lead_country = (lead.get("country") or "").lower()
             if country and country.lower() not in lead_country and lead_country not in country.lower():
@@ -7208,16 +7205,28 @@ async def _build_report() -> str:
             lead_broker = (lead.get("broker_name") or "").lower()
             if not (broker_name.lower() in lead_broker or lead_broker in broker_name.lower()):
                 continue
-            # Нашли подходящий лид — считаем
-            aff_key = str(lead_affid)
-            if aff_key in aff_counts:
-                aff_counts[aff_key] += 1
+            # Подходящий лид — считаем по affid
+            aff_key = str(lead.get("affid", "?"))
+            aff_counts[aff_key] = aff_counts.get(aff_key, 0) + 1
 
         total = sum(aff_counts.values())
+        log.info(f"_build_report MATCH: broker={broker_name!r} country={country!r} → matched {total} leads, aff_counts={aff_counts}")
         lines.append(f"{flag} *{country_iso}* — {broker_name}")
         lines.append(f"  Leads: {total}")
-        for aff_id in aff_ids:
-            lines.append(f"    {aff_id} — {aff_counts.get(aff_id, 0)}")
+
+        # Сначала аффы из ротации
+        shown = set()
+        for aff_id in rotation_affs:
+            count = aff_counts.get(aff_id, 0)
+            lines.append(f"    {aff_id} — {count}")
+            shown.add(aff_id)
+
+        # Потом остальные аффы (вне ротации) — если есть лиды
+        for aff_id, count in sorted(aff_counts.items(), key=lambda x: -x[1]):
+            if aff_id not in shown and count > 0:
+                lines.append(f"    {aff_id} — {count} ⚠️")
+                shown.add(aff_id)
+
         lines.append("")
 
     return "\n".join(lines).strip()
@@ -7253,14 +7262,10 @@ async def _report_loop(bot):
                     for broker_name in unfired:
                         info = today_rotations[broker_name]
                         country = info.get("country", "")
-                        aff_ids_int = [int(a) for a in info.get("affs", []) if str(a).isdigit()]
 
-                        # Ищем хотя бы один лид с нужным affid + country + broker
+                        # Ищем хотя бы один лид для broker + country (любой афф)
                         found_lead = None
                         for lead in all_leads:
-                            lead_affid = lead.get("affid")
-                            if lead_affid not in aff_ids_int:
-                                continue
                             lead_country = (lead.get("country") or "").lower()
                             if country and country.lower() not in lead_country and lead_country not in country.lower():
                                 continue
@@ -7276,10 +7281,14 @@ async def _report_loop(bot):
                             flag = _country_flag(country)
                             country_iso = _country_iso(country)
                             aff_str = "/".join(info.get("affs", []))
+                            lead_aff = str(found_lead.get("affid", "?"))
                             time_str = (datetime.datetime.utcnow() + datetime.timedelta(hours=3)).strftime("%H:%M")
                             msg = f"▶️ *STARTED*\n{broker_name} {flag}{country_iso}"
                             if aff_str:
                                 msg += f" (aff {aff_str})"
+                            # Если первый лид от аффа вне ротации — показываем
+                            if lead_aff not in info.get("affs", []):
+                                msg += f"\n⚠️ first lead from aff {lead_aff}"
                             msg += f" • {time_str}"
                             # Email первого лида — уже нашли его
                             first_email = found_lead.get("email", "")
