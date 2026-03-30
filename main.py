@@ -6783,8 +6783,25 @@ async def _post_init(application):
     _task_queue = asyncio.Queue()
     _queue_worker_task = asyncio.create_task(_queue_worker())
     log.info("Task queue started.")
+    # Загружаем ротации из файла если есть
+    _load_rotations()
     # Запускаем фоновый отчёт каждые 15 минут
     asyncio.create_task(_report_loop(application.bot))
+
+
+def _load_rotations():
+    """Загрузить ротации из JSON файла при старте."""
+    import os
+    path = "/root/auto-b2026/rotations_today.json"
+    if os.path.exists(path):
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+            today_rotations.clear()
+            today_rotations.update(data)
+            log.info(f"Loaded {len(today_rotations)} rotations from {path}")
+        except Exception as e:
+            log.warning(f"Failed to load rotations: {e}")
 
 
 REPORT_CHAT_ID = -5132784554  # Notifications чат
@@ -6977,6 +6994,66 @@ async def _fetch_first_lead(broker_name: str, aff_ids: list, country: str) -> st
     except Exception as e:
         log.warning(f"Stats API error: {e}")
         return []
+
+
+async def _fetch_crm_stats(group_by: str) -> list:
+    """Запросить статистику из CRM API используя cookies браузера."""
+    if not _page:
+        return []
+
+    now = datetime.datetime.now()
+    from_dt = now.strftime("%Y-%m-%d 00:00:00")
+    to_dt = now.strftime("%Y-%m-%d 23:59:59")
+
+    payload = {
+        "successfullLeadsOnly": False,
+        "hideDuplicateFailedLeads": False,
+        "from_datetime": from_dt,
+        "to_datetime": to_dt,
+        "timezone": "Europe/Istanbul",
+        "group_by": group_by,
+        "breakdowns": [],
+        "from_page": "stats",
+        "breakdown_request": True,
+        "test_leads": "exclude",
+        "trafficType": "all",
+        "insideHoursOnly": False,
+        "createdInsideDateRangeOnly": False,
+        "aggregateFields": [
+            {"key": "id", "show": True},
+            {"key": "name", "show": True},
+            {"key": "total_leads", "show": True},
+            {"key": "successful_leads", "show": True},
+        ],
+    }
+
+    try:
+        payload_json = json.dumps(payload)
+        result = await _page.evaluate(f"""async () => {{
+            try {{
+                const xsrf = document.cookie.split('; ').find(r => r.startsWith('XSRF-TOKEN='))?.split('=')[1];
+                const decodedXsrf = xsrf ? decodeURIComponent(xsrf) : '';
+                const resp = await fetch('/api/stats', {{
+                    method: 'POST',
+                    headers: {{
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'X-XSRF-TOKEN': decodedXsrf
+                    }},
+                    body: {json.dumps(payload_json)}
+                }});
+                if (!resp.ok) return null;
+                return await resp.json();
+            }} catch(e) {{ return null; }}
+        }}""")
+
+        if result and isinstance(result, (list, dict)):
+            data = result if isinstance(result, list) else result.get("data", [])
+            log.info(f"Stats API ({group_by}): {len(data)} records")
+            return data
+    except Exception as e:
+        log.warning(f"Stats API error ({group_by}): {e}")
+    return []
 
 
 async def _build_report() -> str:
