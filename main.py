@@ -5676,14 +5676,14 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
             broker_lines: dict = {}
 
             # Собираем данные ротации для отчётов
-            # rotation_info: {broker_id: {"affs": [...], "country": "...", "is_tomorrow": bool}}
+            # rotation_info: {broker_id: {"affs": [...], "country": "...", "is_tomorrow": bool, "cap": N}}
             rotation_info: dict = {}
             for task in tasks:
                 if task.get("type") == "lead_task" and task.get("country") and task.get("broker_id"):
                     broker_country_cache[task["broker_id"]] = task["country"]
                     bid = task["broker_id"]
                     if bid not in rotation_info:
-                        rotation_info[bid] = {"affs": [], "country": task["country"], "is_tomorrow": False}
+                        rotation_info[bid] = {"affs": [], "country": task["country"], "is_tomorrow": False, "cap": None}
                     # Определяем is_tomorrow по дню недели
                     import datetime as _dt
                     day_names = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
@@ -5691,12 +5691,15 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                     t_day_val = task.get("day", "")
                     if t_day_val and t_day_val.lower() == tomorrow_name.lower():
                         rotation_info[bid]["is_tomorrow"] = True
+                    # Сохраняем cap если есть
+                    if task.get("cap") is not None:
+                        rotation_info[bid]["cap"] = task["cap"]
                 # Собираем аффов из funnel_override
                 if task.get("type") == "funnel_override":
                     bid = task.get("broker_id", "")
                     affs = task.get("affiliate_ids", [])
                     if bid not in rotation_info:
-                        rotation_info[bid] = {"affs": [], "country": broker_country_cache.get(bid, ""), "is_tomorrow": False}
+                        rotation_info[bid] = {"affs": [], "country": broker_country_cache.get(bid, ""), "is_tomorrow": False, "cap": None}
                     rotation_info[bid]["affs"].extend(affs)
                 # Собираем оригинального аффа из lead_task
                 if task.get("type") == "lead_task":
@@ -5704,7 +5707,7 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                     affs = task.get("affiliate_ids", [])
                     if bid and affs:
                         if bid not in rotation_info:
-                            rotation_info[bid] = {"affs": [], "country": task.get("country", ""), "is_tomorrow": False}
+                            rotation_info[bid] = {"affs": [], "country": task.get("country", ""), "is_tomorrow": False, "cap": None}
                         for a in affs:
                             if str(a) not in rotation_info[bid]["affs"]:
                                 rotation_info[bid]["affs"].append(str(a))
@@ -5714,7 +5717,7 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                     aff_id = str(task.get("affiliate_id", "") or "")
                     if bid and aff_id:
                         if bid not in rotation_info:
-                            rotation_info[bid] = {"affs": [], "country": broker_country_cache.get(bid, ""), "is_tomorrow": False}
+                            rotation_info[bid] = {"affs": [], "country": broker_country_cache.get(bid, ""), "is_tomorrow": False, "cap": None}
                         if aff_id not in rotation_info[bid]["affs"]:
                             rotation_info[bid]["affs"].append(aff_id)
 
@@ -5944,12 +5947,29 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
             for bid, info in rotation_info.items():
                 broker_display = _last_broker_full_name if _last_broker_full_name != bid else bid
                 entry = {"affs": list(set(info["affs"])), "country": info["country"]}
+                if info.get("cap"):
+                    entry["cap"] = info["cap"]
                 if info["is_tomorrow"]:
+                    # Мержим с существующей записью (не перезаписываем аффов)
+                    if broker_display in tomorrow_rotations:
+                        existing = tomorrow_rotations[broker_display]
+                        merged_affs = list(set(existing.get("affs", []) + entry["affs"]))
+                        entry["affs"] = merged_affs
+                        if not entry.get("cap") and existing.get("cap"):
+                            entry["cap"] = existing["cap"]
                     tomorrow_rotations[broker_display] = entry
-                    log.info(f"Rotation saved to tomorrow: {broker_display} / {info['country']} / affs {entry['affs']}")
+                    _save_tomorrow_rotations()
+                    log.info(f"Rotation saved to tomorrow: {broker_display} / {info['country']} / affs {entry['affs']} / cap {entry.get('cap', '-')}")
                 else:
+                    if broker_display in today_rotations:
+                        existing = today_rotations[broker_display]
+                        merged_affs = list(set(existing.get("affs", []) + entry["affs"]))
+                        entry["affs"] = merged_affs
+                        if not entry.get("cap") and existing.get("cap"):
+                            entry["cap"] = existing["cap"]
                     today_rotations[broker_display] = entry
-                    log.info(f"Rotation saved to today: {broker_display} / {info['country']} / affs {entry['affs']}")
+                    _save_rotations()
+                    log.info(f"Rotation saved to today: {broker_display} / {info['country']} / affs {entry['affs']} / cap {entry.get('cap', '-')}")
 
             # Собираем финальное сообщение — один блок на брокера
             alog.set_status("last_action", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
@@ -7027,14 +7047,13 @@ async def _post_init(application):
 
 
 def _load_rotations():
-    """Загрузить ротации из JSON файла при старте."""
+    """Загрузить ротации из JSON файлов при старте."""
     import os
     path = "/root/auto-b2026/rotations_today.json"
     if os.path.exists(path):
         try:
             with open(path, "r") as f:
                 data = json.load(f)
-            # Поддерживаем два формата: просто ротации или {rotations, fired_started}
             if "rotations" in data:
                 today_rotations.clear()
                 today_rotations.update(data["rotations"])
@@ -7047,6 +7066,18 @@ def _load_rotations():
         except Exception as e:
             log.warning(f"Failed to load rotations: {e}")
 
+    # Загружаем ротации на завтра
+    t_path = "/root/auto-b2026/rotations_tomorrow.json"
+    if os.path.exists(t_path):
+        try:
+            with open(t_path, "r") as f:
+                t_data = json.load(f)
+            tomorrow_rotations.clear()
+            tomorrow_rotations.update(t_data)
+            log.info(f"Loaded {len(tomorrow_rotations)} tomorrow rotations from {t_path}")
+        except Exception as e:
+            log.warning(f"Failed to load tomorrow rotations: {e}")
+
 
 def _save_rotations():
     """Сохранить ротации и fired_started в JSON файл."""
@@ -7056,6 +7087,16 @@ def _save_rotations():
             json.dump({"rotations": today_rotations, "fired_started": list(fired_started)}, f, ensure_ascii=False, indent=2)
     except Exception as e:
         log.warning(f"Failed to save rotations: {e}")
+
+
+def _save_tomorrow_rotations():
+    """Сохранить ротации на завтра в отдельный JSON файл."""
+    path = "/root/auto-b2026/rotations_tomorrow.json"
+    try:
+        with open(path, "w") as f:
+            json.dump(tomorrow_rotations, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        log.warning(f"Failed to save tomorrow rotations: {e}")
 
 
 REPORT_CHAT_ID = -1003811333656  # Notifications чат (supergroup)
@@ -7537,6 +7578,8 @@ async def _report_loop(bot):
                 today_rotations.update(tomorrow_rotations)
                 tomorrow_rotations.clear()
                 fired_started.clear()
+                _save_rotations()
+                _save_tomorrow_rotations()  # очищаем файл завтрашних
                 log.info(f"Midnight swap: today_rotations now has {len(today_rotations)} entries")
 
             # Проверка "started" — каждую минуту без ограничения по времени
