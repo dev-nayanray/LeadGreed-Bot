@@ -635,6 +635,9 @@ Capitan, Legion, Fintrix CRG, Swin FR CRG, Swin FR CRG duplicate, Swin EN CRG, S
   - "affiliate_override" — добавить маппинг аффилиата (affiliate_id, override_code, country)
     Если нужно замаппить НЕСКОЛЬКО аффов с одним override_code ("map as 123 all", "map all as 123") — создай отдельную задачу affiliate_override для каждого аффа из списка.
     "map as 123 all" / "map all as 123" / "map as 123 in case we are sharing" → для каждого аффа из списка: {"type": "affiliate_override", "broker_id": ..., "affiliate_id": "XXX", "override_code": "123"}
+    "Source - 233" / "source 233" / "source: 233" → affiliate_override с override_code = "233". Affiliate ID берётся из числового префикса сообщения.
+    Пример: "225 FR CRG today\nCapitan 10 cap ...\nSource - 233" →
+      {"type": "affiliate_override", "broker_id": "Capitan", "affiliate_id": "225", "override_code": "233", "country": "France"}
     Пример: "123/122/28 Legion ... map as 123 all" →
     [
       {"type": "affiliate_override", "broker_id": "Legion", "affiliate_id": "123", "override_code": "123"},
@@ -6533,7 +6536,8 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         "schedule", "geo:", "desk", "off", "close", "закрыть", "выходн",
                         "pause", "back in", "is back", "inactive", "deactivate", "activate", "disable", "enable",
                         "put active", "put inactive", "bring back", "back to active", "active now", "is active",
-                        "set active", "set inactive", "make active", "make inactive", "total")
+                        "set active", "set inactive", "make active", "make inactive", "total",
+                        "source", "funnel", "map as", "map aff")
         # Числа с % (100%) или через / (21/117/28) — не прайсы
         text_no_slashed = re.sub(r'\d+(/\d+)+', '', text)  # убираем "21/117/28/13"
         msg_has_price = bool(re.search(r'\b[A-Z]{2}\b', text_upper_orig) and re.search(r'\b\d{3,4}\b(?!%)', text_no_slashed))
@@ -6541,7 +6545,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg_has_time = bool(re.search(r'\d{1,2}:\d{2}\s*[-–]\s*\d{1,2}:\d{2}', text) or
                             re.search(r'\d{1,2}\.\d{2}\s*[-–]\s*\d{1,2}\.\d{2}', text) or
                             re.search(r'\bat\s+\d{1,2}:\d{2}', text_lower_orig))
-        msg_has_broker_name = bool(re.search(r'\b(legion|nexus|capitan|fintrix|capex|swin|helios|axia|fugazi|ave|theta|imperius|emp|cmt|glb|mn|marsi|farah|roibees|clickbait|avelux|mediaNow|universo|fusion|ventury)\b', text_lower_orig, re.IGNORECASE))
+        msg_has_broker_name = bool(re.search(r'\b(legion|nexus|capitan|fintrix|capex|swin|helios|axia|fugazi|ave|theta|imperius|emp|cmt|glb|mn|marsi|farah|roibees|clickbait|avelux|mediaNow|universo|fusion|ventury|naga|dftradegroup)\b', text_lower_orig, re.IGNORECASE))
 
         # Имя брокера одно по себе — не команда. Нужно ещё что-то (ISO код, число, время, ключевое слово)
         msg_has_action_context = bool(
