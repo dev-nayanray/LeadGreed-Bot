@@ -428,6 +428,9 @@ SYSTEM_PROMPT = """
   Примеры С суммой — add_affiliate_revenue:
   • "159 DE 1300" — есть сумма 1300 → ok
   • "112\nES 800\nIT 900" — есть суммы → ok
+  • "29 IT 1450 15%" — аффилиат 29, Италия, сумма 1450, 15% → add_affiliate_revenue (НЕ брокер! 29 — это 2 цифры = аффилиат)
+  • "71 BR 800" — аффилиат 71, Бразилия, сумма 800 → add_affiliate_revenue
+  ВАЖНО: Число из 1-3 цифр + ISO код + сумма = ВСЕГДА аффилиат. Число не может быть брокером если нет имени/дефиса рядом.
 
   Примеры:
   • "3422 - Naga Joshua\n71 BR 800" → broker_id: "3422", country: "Brazil", amount: 800, affiliate_id: "71" (add_revenue)
@@ -5763,7 +5766,7 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                         )
                         display_name = _last_broker_full_name if _last_broker_full_name != t_broker else t_broker
                         if display_name not in broker_lines: broker_lines[display_name] = []
-                        broker_lines[display_name].append(f"🚫 {close_msg}")
+                        broker_lines[display_name].append(f"🚫 {_inject_country_flag(close_msg)}")
                         alog.update_action(lid, "success" if "❌" not in close_msg else "error", close_msg[:200])
 
                     elif t_type == "funnel_override":
@@ -5797,7 +5800,7 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                             funnel_msg = "❌ No override codes specified"
                             display_name = _last_broker_full_name if _last_broker_full_name != t_broker else t_broker
                             if display_name not in broker_lines: broker_lines[display_name] = []
-                            broker_lines[display_name].append(f"📝 Funnel mapping: {funnel_msg}")
+                            broker_lines[display_name].append(f"📝 Funnel mapping: {_inject_country_flag(funnel_msg)}")
                         elif t_aff_ids:
                             sub_parts = []
                             for one_aff in t_aff_ids:
@@ -5823,7 +5826,7 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                             )
                             display_name = _last_broker_full_name if _last_broker_full_name != t_broker else t_broker
                             if display_name not in broker_lines: broker_lines[display_name] = []
-                            broker_lines[display_name].append(f"📝 Funnel mapping: {funnel_msg}")
+                            broker_lines[display_name].append(f"📝 Funnel mapping: {_inject_country_flag(funnel_msg)}")
                             alog.update_action(lid, "success" if "✅" in funnel_msg else "error", funnel_msg[:200])
 
                     elif t_type == "affiliate_override":
@@ -5843,7 +5846,7 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                             )
                         display_name = _last_broker_full_name if _last_broker_full_name != t_broker else t_broker
                         if display_name not in broker_lines: broker_lines[display_name] = []
-                        broker_lines[display_name].append(f"📝 Aff mapping: {aff_msg}")
+                        broker_lines[display_name].append(f"📝 Aff mapping: {_inject_country_flag(aff_msg)}")
                         alog.update_action(lid, "success" if "✅" in aff_msg else "error", aff_msg[:200])
 
                     else:
@@ -5875,7 +5878,7 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                     delete_first=True,
                                     base_path=mb_broker_base,
                                 )
-                            sub_parts.append(f"🎯 Cap: {cap_msg}")
+                            sub_parts.append(f"🎯 Cap: {_inject_country_flag(cap_msg)}")
 
                         # Часы
                         if task.get("start"):
@@ -5922,7 +5925,7 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                         days_filter=["Monday","Tuesday","Wednesday","Thursday","Friday"],
                                         base_path=mb_broker_base
                                     )
-                                sub_parts.append(f"🕐 Hours: {hours_msg}")
+                                sub_parts.append(f"🕐 Hours: {_inject_country_flag(hours_msg)}")
                             else:
                                 sub_parts.append(f"❌ Broker '{t_broker}' not found")
 
@@ -6449,7 +6452,7 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                     delete_first=True,
                                     base_path=lt_broker_base,
                                 )
-                            sub_results.append(f"🎯 Cap: {sub_msg}")
+                            sub_results.append(f"🎯 Cap: {_inject_country_flag(sub_msg)}")
                         except Exception as cap_err:
                             sub_results.append(f"❌ Cap error: {cap_err}")
 
@@ -6525,7 +6528,7 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                             days_filter=days_filter,
                                             base_path=lt_broker_base
                                         )
-                                sub_results.append(f"🕐 Hours: {sub_msg}")
+                                sub_results.append(f"🕐 Hours: {_inject_country_flag(sub_msg)}")
                             except Exception as hours_err:
                                 sub_results.append(f"❌ Hours error: {hours_err}")
 
@@ -7126,6 +7129,26 @@ def _extract_broker_id(broker_name: str) -> int:
     """Извлечь числовой ID брокера из строки типа '2251 - Fugazi CH - CRG 🟩'."""
     m = re.match(r'(\d+)', broker_name.strip())
     return int(m.group(1)) if m else 0
+
+
+def _inject_country_flag(msg: str) -> str:
+    """Вставить флаг страны перед названием страны в сообщении.
+    'France: cap 10 → 10' → '🇫🇷 France: cap 10 → 10'
+    'mapped for Spain' → 'mapped for 🇪🇸 Spain'
+    """
+    # Собираем все страны из _COUNTRY_ISO (длинные сначала чтобы "United Kingdom" не перебил "United")
+    countries = sorted(_COUNTRY_ISO.keys(), key=len, reverse=True)
+    for c in countries:
+        # Case-insensitive поиск названия страны
+        idx = msg.lower().find(c)
+        if idx != -1:
+            # Берём оригинальный регистр из сообщения
+            original = msg[idx:idx + len(c)]
+            flag = _country_flag(c)
+            if flag:
+                msg = msg[:idx] + flag + " " + original + msg[idx + len(c):]
+            break  # Одна страна на сообщение достаточно
+    return msg
 
 
 async def _fetch_last_funnel(affiliate_id: str, country: str) -> str:
