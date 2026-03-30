@@ -6888,6 +6888,12 @@ def _country_iso(country: str) -> str:
     return _COUNTRY_ISO.get(country.lower(), country[:2].upper())
 
 
+def _extract_broker_id(broker_name: str) -> int:
+    """Извлечь числовой ID брокера из строки типа '2251 - Fugazi CH - CRG 🟩'."""
+    m = re.match(r'(\d+)', broker_name.strip())
+    return int(m.group(1)) if m else 0
+
+
 async def _fetch_last_funnel(affiliate_id: str, country: str) -> str:
     """Найти последний фанел аффилиата для страны. Пока не реализовано."""
     return ""
@@ -7189,9 +7195,9 @@ async def _build_report() -> str:
     # DEBUG: показываем формат данных для отладки
     if all_leads:
         sample = all_leads[0]
-        log.info(f"_build_report SAMPLE lead: country={sample.get('country')!r} broker={sample.get('broker_name')!r} affid={sample.get('affid')!r}")
+        log.info(f"_build_report SAMPLE lead: country={sample.get('country')!r} broker_name={sample.get('broker_name')!r} broker_id={sample.get('broker_id')!r} affid={sample.get('affid')!r}")
     for bname, binfo in today_rotations.items():
-        log.info(f"_build_report ROTATION: broker={bname!r} country={binfo.get('country')!r} affs={binfo.get('affs')!r}")
+        log.info(f"_build_report ROTATION: broker={bname!r} broker_id={_extract_broker_id(bname)} country={binfo.get('country')!r} affs={binfo.get('affs')!r}")
 
     now = datetime.datetime.utcnow() + datetime.timedelta(hours=3)
     time_str = now.strftime("%H:%M")
@@ -7200,6 +7206,7 @@ async def _build_report() -> str:
     for broker_name, info in today_rotations.items():
         country = info.get("country", "")
         rotation_affs = info.get("affs", [])
+        rotation_broker_id = _extract_broker_id(broker_name)
 
         country_iso = _country_iso(country)
         flag = _country_flag(country)
@@ -7211,9 +7218,9 @@ async def _build_report() -> str:
             lead_country = (lead.get("country") or "").lower()
             if country and country.lower() not in lead_country and lead_country not in country.lower():
                 continue
-            # Проверяем брокера (частичное совпадение)
-            lead_broker = (lead.get("broker_name") or "").lower()
-            if not (broker_name.lower() in lead_broker or lead_broker in broker_name.lower()):
+            # Проверяем брокера по ID (точное совпадение)
+            lead_broker_id = int(lead.get("broker_id") or 0)
+            if rotation_broker_id and lead_broker_id != rotation_broker_id:
                 continue
             # Подходящий лид — считаем по affid
             aff_key = str(lead.get("affid", "?"))
@@ -7282,6 +7289,7 @@ async def _report_loop(bot):
                     for broker_name in unfired:
                         info = today_rotations[broker_name]
                         country = info.get("country", "")
+                        rotation_broker_id = _extract_broker_id(broker_name)
 
                         # Ищем хотя бы один лид для broker + country (любой афф)
                         found_lead = None
@@ -7289,8 +7297,8 @@ async def _report_loop(bot):
                             lead_country = (lead.get("country") or "").lower()
                             if country and country.lower() not in lead_country and lead_country not in country.lower():
                                 continue
-                            lead_broker = (lead.get("broker_name") or "").lower()
-                            if not (broker_name.lower() in lead_broker or lead_broker in broker_name.lower()):
+                            lead_broker_id = int(lead.get("broker_id") or 0)
+                            if rotation_broker_id and lead_broker_id != rotation_broker_id:
                                 continue
                             found_lead = lead
                             break
