@@ -954,6 +954,9 @@ async def find_and_open_broker(page: Page, broker_id: str, country_hint: str = N
     result = await _find_and_open_broker_impl(page, broker_id, country_hint)
     if result:
         _cache_broker_path(cache_key, result, _last_broker_full_name)
+    # Strip green square emoji from display name
+    if _last_broker_full_name:
+        _last_broker_full_name = _last_broker_full_name.replace('🟩', '').replace('🟢', '').strip()
     return result
 
 
@@ -1461,7 +1464,7 @@ async def action_change_hours(broker_id: str, start: str, end: str,
             save_btn = await page.wait_for_selector("text=SAVE OPENING HOURS", timeout=3000)
             await save_btn.click()
             await page.wait_for_timeout(700)
-            results.append(f"✅ {country_name}: {start}–{end} saved")
+            results.append(f"{country_name}: {start}–{end} saved")
         except Exception:
             await _close_modal(page)
             results.append(f"⚠️ {country_name}: Save button not found")
@@ -1674,8 +1677,8 @@ async def action_edit_country_add_days(broker_id: str, country: str, start: str,
         await save_btn.click()
         await page.wait_for_timeout(700)
         if is_overnight:
-            return f"✅ {country}: {', '.join(enabled)} with hours {start_val}–{display_end}"
-        return f"✅ {country}: days added: {', '.join(enabled)} with hours {start_val}–{display_end}"
+            return f"{country}: {', '.join(enabled)} with hours {start_val}–{display_end}"
+        return f"{country}: days added: {', '.join(enabled)} with hours {start_val}–{display_end}"
     except Exception:
         await _close_modal(page)
         return f"⚠️ {country}: Save button not found."
@@ -1846,7 +1849,7 @@ async def action_add_country_hours_multi(broker_id: str, country: str,
         await page.wait_for_timeout(700)
         groups_str = ", ".join(f"{g['start']}–{g['end']} ({'/'.join(g['days'])})" for g in schedule_groups)
         action_word = "Updated" if country_exists else "Added"
-        return f"✅ {action_word} hours for {country}: {groups_str}"
+        return f"{action_word} hours for {country}: {groups_str}"
     except Exception:
         await _close_modal(page)
         return f"⚠️ {country}: Save button not found."
@@ -2133,7 +2136,7 @@ async def action_add_country_hours(broker_id: str, country: str, start: str, end
         save_btn = await page.wait_for_selector("text=SAVE OPENING HOURS", timeout=3000)
         await save_btn.click()
         await page.wait_for_timeout(700)
-        return f"✅ Hours added for {country}: {start}–{end}"
+        return f"Hours added for {country}: {start}–{end}"
     except Exception:
         return "⚠️ Save button not found. Data may not have been saved."
 
@@ -2184,7 +2187,7 @@ async def action_get_broker_revenue(broker_id: str, countries: list) -> str:
                 found = row
                 break
         if found:
-            results.append(f"✅ {found['country']}: {found['amount']}")
+            results.append(f"{found['country']}: {found['amount']}")
         else:
             results.append(f"❌ {country}: price not found")
 
@@ -2370,7 +2373,7 @@ async def action_get_affiliate_revenue(affiliate_id: str, countries: list) -> st
                 found = row
                 break
         if found:
-            results.append(f"✅ {found['country']}: {found['amount']}")
+            results.append(f"{found['country']}: {found['amount']}")
         else:
             results.append(f"❌ {country}: price not found")
 
@@ -2484,7 +2487,7 @@ async def action_add_affiliate_revenue(affiliate_id: str, country: str, amount: 
             await page.wait_for_timeout(1000)
             country_label = country if country.lower() != "all" else "all countries"
             log.info(f"Price updated for {country_label}: ${old_amount} → ${amount}")
-            return f"✅ {country_label}: ${old_amount} → ${amount}"
+            return f"{country_label}: ${old_amount} → ${amount}"
         except Exception as e:
             await _close_modal(page)
             return "⚠️ Save button not found."
@@ -2585,7 +2588,7 @@ async def action_add_affiliate_revenue(affiliate_id: str, country: str, amount: 
         await page.wait_for_timeout(1000)
         country_label = country if country.lower() != "all" else "all countries"
         log.info(f"Affiliate price saved for {country_label}: ${amount}")
-        return f"✅ Price added for {country_label}: ${amount}"
+        return f"Price added for {country_label}: ${amount}"
     except Exception as e:
         log.error(f"Кнопка Save not foundа: {e}")
         await _close_modal(page)
@@ -2789,7 +2792,7 @@ async def action_add_affiliate_revenue_grouped(affiliate_id: str, countries: lis
             await save_btn.click()
             await page.wait_for_timeout(1200)
             for c in selected:
-                results.append(f"✅ Price added for {c}: ${amount}")
+                results.append(f"Price added for {c}: ${amount}")
             not_selected = [c for c in new_countries if c not in selected]
             for c in not_selected:
                 results.append(f"❌ {c}: not found in dropdown.")
@@ -3012,7 +3015,7 @@ async def action_add_revenue_grouped(broker_id: str, countries: list, amount: st
             aff_label = f" (aff {affiliate_id})" if affiliate_id else ""
             if saved:
                 for c in selected:
-                    results.append(f"✅ Price added for {c}: ${amount}{aff_label}")
+                    results.append(f"Price added for {c}: ${amount}{aff_label}")
             else:
                 raise Exception("Save button not found")
             not_selected = [c for c in new_countries if c not in selected]
@@ -3106,8 +3109,8 @@ async def action_add_revenue(broker_id: str, country: str, amount: str, affiliat
             await page.wait_for_timeout(1000)
             country_label = country if country.lower() != "all" else "all countries"
             if old_amount:
-                return f"✅ {country_label}: ${old_amount} → ${amount}"
-            return f"✅ Price updated for {country_label}: ${amount}"
+                return f"{country_label}: ${old_amount} → ${amount}"
+            return f"Price updated for {country_label}: ${amount}"
         except Exception:
             await _close_modal(page)
             return "⚠️ Save button not found."
@@ -3253,7 +3256,7 @@ async def action_add_revenue(broker_id: str, country: str, amount: str, affiliat
         aff_label = f" (aff {affiliate_id})" if affiliate_id else ""
         if saved:
             log.info(f"Price saved for {country_label}: ${amount}{aff_label}")
-            result = f"✅ Price added for {country_label}: ${amount}{aff_label}"
+            result = f"Price added for {country_label}: ${amount}{aff_label}"
             if affiliate_param_failed:
                 result += f"\n⚠️ Affiliate parameter not added (try again or add manually)"
             return result
@@ -3345,15 +3348,12 @@ async def _close_days_for_pencil(page, pencil, country_name: str, days_to_close:
         await page.wait_for_timeout(700)
         # Формируем итоговое сообщение
         parts = []
-        if len(closed) == len(days_to_close):
-            parts.append("all days closed")
-        else:
-            parts.append(f"closed: {', '.join(closed)}")
+        parts.append(f"closed: {', '.join(closed)}")
         if already_closed:
             parts.append(f"already closed: {', '.join(already_closed)}")
         if not_found:
             parts.append(f"not found: {', '.join(not_found)}")
-        return f"✅ {country_name}: {' | '.join(parts)}."
+        return f"{country_name}: {' | '.join(parts)}."
     except Exception:
         await _close_modal(page)
         return f"⚠️ {country_name}: Save button not found."
@@ -3501,15 +3501,12 @@ async def _reopen_days_for_pencil(page, pencil, country_name: str, days_to_reope
         await save_btn.click()
         await page.wait_for_timeout(700)
         parts = []
-        if len(opened) == len(days_to_reopen):
-            parts.append("all days reopened")
-        else:
-            parts.append(f"reopened: {', '.join(opened)}")
+        parts.append(f"reopened: {', '.join(opened)}")
         if already_open:
             parts.append(f"already open: {', '.join(already_open)}")
         if not_found:
             parts.append(f"not found: {', '.join(not_found)}")
-        return f"✅ {country_name}: {' | '.join(parts)}."
+        return f"{country_name}: {' | '.join(parts)}."
     except Exception:
         await _close_modal(page)
         return f"⚠️ {country_name}: Save button not found."
@@ -3906,7 +3903,7 @@ async def action_add_affiliate_mapping(broker_id: str, affiliate_id: str,
 
         country_str = f" / {country}" if country and country.lower() != "all" else ""
         log.info(f"Mapping saved: aff {affiliate_id} → {override_code} for broker {broker_id}{country_str}")
-        result = f"✅ Mapped aff {affiliate_id}{country_str}: override ID = {override_code}"
+        result = f"Mapped aff {affiliate_id}{country_str}: override ID = {override_code}"
         return result
     except Exception:
         await _close_modal(page)
@@ -4248,7 +4245,7 @@ async def action_add_funnel_slug_override(broker_id: str, override_codes: list,
         if affiliate_id and not aff_selected:
             warnings.append(f"⚠️ Affiliate {affiliate_id} not selected (not found in list)")
 
-        result = f"✅ funnels {codes_str} mapped for {countries_str}"
+        result = f"funnels {codes_str} mapped for {countries_str}"
         if warnings:
             result += "\n" + "\n".join(warnings)
         return result
@@ -4392,7 +4389,7 @@ async def action_toggle_broker(broker_id: str, activate: bool) -> str:
             await page.wait_for_timeout(1000)
 
             action_word = "active" if activate else "inactive"
-            results.append(f"✅ {broker['name']}: {action_word}")
+            results.append(f"{broker['name']}: {action_word}")
         except Exception as e:
             results.append(f"❌ {broker['name']}: error — {e}")
 
@@ -4558,8 +4555,8 @@ async def action_change_caps(broker_id: str, country: str, cap_value: int = 0, d
             await save_btn.click()
             await page.wait_for_timeout(1000)
             if old_cap:
-                return f"✅ {country}: cap {old_cap} → {cap_value}"
-            return f"✅ {country}: cap set to {cap_value}"
+                return f"{country}: cap {old_cap} → {cap_value}"
+            return f"{country}: cap set to {cap_value}"
         except Exception:
             await _close_modal(page)
             return f"⚠️ {country}: SAVE CAP button not found."
@@ -4800,7 +4797,7 @@ async def action_change_caps(broker_id: str, country: str, cap_value: int = 0, d
                     aff_info = f" (aff {affiliate_id})"
             else:
                 aff_info = ""
-            return f"✅ {country}: cap created: {cap_value}{aff_info}"
+            return f"{country}: cap created: {cap_value}{aff_info}"
         except Exception:
             await _close_modal(page)
             return f"⚠️ {country}: SAVE CAP button not found."
@@ -5272,7 +5269,7 @@ def build_confirm_text(action: dict) -> str:
             f"Time: `{h.get('start','?')} — {h.get('end','?')}`\n"
             f"Countries: {countries}\n"
             f"Days: {days}\n"
-            f"No-traffic: {'✅ yes' if action.get('no_traffic', True) else '❌ no'}\n\n"
+            f"No-traffic: {'yes' if action.get('no_traffic', True) else '❌ no'}\n\n"
             f"Confirm?"
         )
 
@@ -5295,7 +5292,7 @@ def build_confirm_text(action: dict) -> str:
                 f"Brokers: `{brokers}`\n"
                 f"Countries: {countries_str}\n"
                 f"Schedule:\n{sched_str}\n"
-                f"No-traffic: {'✅ yes' if action.get('no_traffic', True) else '❌ no'}\n\n"
+                f"No-traffic: {'yes' if action.get('no_traffic', True) else '❌ no'}\n\n"
                 f"Confirm?"
             )
         else:
@@ -5307,7 +5304,7 @@ def build_confirm_text(action: dict) -> str:
                 f"Brokers: `{brokers}`\n"
                 f"Countries & hours:\n{lines}\n"
                 f"Days: {days}\n"
-                f"No-traffic: {'✅ yes' if action.get('no_traffic', True) else '❌ no'}\n\n"
+                f"No-traffic: {'yes' if action.get('no_traffic', True) else '❌ no'}\n\n"
                 f"Confirm?"
             )
 
@@ -5420,7 +5417,7 @@ def build_confirm_text(action: dict) -> str:
             f"Hours:\n{hours_lines}\n"
             f"Days: {days}\n"
             f"Caps:\n{caps_lines}\n"
-            f"No-traffic: {'✅ yes' if action.get('no_traffic', True) else '❌ no'}\n\n"
+            f"No-traffic: {'yes' if action.get('no_traffic', True) else '❌ no'}\n\n"
             f"Confirm?"
         )
 
@@ -5441,7 +5438,7 @@ def build_confirm_text(action: dict) -> str:
             f"Action: bulk schedule ({len(ch_list)} countries)\n"
             f"Brokers: `{brokers}`\n"
             f"Hours ({days_keep}):\n{hours_lines}{close_str}\n"
-            f"Skip missing: ✅ yes\n\n"
+            f"Skip missing: yes\n\n"
             f"Confirm?"
         )
 
@@ -5658,7 +5655,7 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                     alog.update_action(lid, "error", str(e)[:200])
 
             alog.set_status("last_action", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-            msg_text = "\n\n".join(results) or "✅ Done."
+            msg_text = "\n\n".join(results) or "Done."
             for attempt in range(3):
                 try:
                     await bot.send_message(chat_id, msg_text, parse_mode="Markdown", disable_notification=True)
@@ -5827,7 +5824,7 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                             display_name = _last_broker_full_name if _last_broker_full_name != t_broker else t_broker
                             if display_name not in broker_lines: broker_lines[display_name] = []
                             broker_lines[display_name].append(f"📝 Funnel mapping: {_inject_country_flag(funnel_msg)}")
-                            alog.update_action(lid, "success" if "✅" in funnel_msg else "error", funnel_msg[:200])
+                            alog.update_action(lid, "success" if "❌" not in funnel_msg else "error", funnel_msg[:200])
 
                     elif t_type == "affiliate_override":
                         t_aff_id = str(task.get("affiliate_id", ""))
@@ -5847,7 +5844,7 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                         display_name = _last_broker_full_name if _last_broker_full_name != t_broker else t_broker
                         if display_name not in broker_lines: broker_lines[display_name] = []
                         broker_lines[display_name].append(f"📝 Aff mapping: {_inject_country_flag(aff_msg)}")
-                        alog.update_action(lid, "success" if "✅" in aff_msg else "error", aff_msg[:200])
+                        alog.update_action(lid, "success" if "❌" not in aff_msg else "error", aff_msg[:200])
 
                     else:
                         # lead_task — капа + часы
@@ -5958,9 +5955,9 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
             alog.set_status("last_action", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
             final_parts = []
             for broker_name, lines in broker_lines.items():
-                block = f"*Broker {escape_md(broker_name)}:*\n" + "\n\n".join(lines)
+                block = f"*Broker {escape_md(broker_name.replace('🟩', '').replace('🟢', '').strip())}:*\n" + "\n\n".join(lines)
                 final_parts.append(block)
-            msg_text = "\n\n".join(final_parts) or "✅ Done."
+            msg_text = "\n\n".join(final_parts) or "Done."
             for attempt in range(3):
                 try:
                     await bot.send_message(chat_id, msg_text, parse_mode="Markdown", disable_notification=True)
@@ -6393,7 +6390,7 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                 "country_caps": [{"country": no_country, "cap": int(no_delta)}],
                             }
                             kb = [[
-                                InlineKeyboardButton(f"✅ Create cap {no_delta}", callback_data="confirm"),
+                                InlineKeyboardButton(f"Create cap {no_delta}", callback_data="confirm"),
                                 InlineKeyboardButton("❌ Cancel", callback_data="cancel"),
                             ]]
                             sent = await bot.send_message(
@@ -6660,7 +6657,7 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                 await save_btn.click()
                                 await page.wait_for_timeout(700)
                                 updated.append(country_name)
-                                log.info(f"✅ {country_name}: {start_val}-{end_val} + close {days_close}")
+                                log.info(f"{country_name}: {start_val}-{end_val} + close {days_close}")
                             except Exception:
                                 await _close_modal(page)
                                 errors.append(f"{country_name}: save failed")
@@ -6672,10 +6669,10 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                     # 3. Формируем итог
                     if updated:
                         days_str = ", ".join(days_keep)
-                        sub_results.append(f"✅ Updated {len(updated)} countries for {days_str}")
+                        sub_results.append(f"Updated {len(updated)} countries for {days_str}")
                     if days_close and updated:
                         close_str = ", ".join(days_close)
-                        sub_results.append(f"✅ Closed {close_str} for {len(updated)} countries")
+                        sub_results.append(f"Closed {close_str} for {len(updated)} countries")
                     if skipped:
                         sub_results.append(f"⏭ Skipped ({len(skipped)}): {', '.join(skipped)}")
                     if errors:
@@ -6701,7 +6698,7 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
             alog.update_action(lid, status, res_text[:200])
         alog.set_status("last_action", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
-        msg_text = "\n\n".join(results) or "✅ Done."
+        msg_text = "\n\n".join(results) or "Done."
         for attempt in range(3):
             try:
                 await bot.send_message(chat_id, msg_text, parse_mode="Markdown", disable_notification=True)
@@ -6876,7 +6873,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # bulk_schedule и multi_broker_task — запрашиваем подтверждение
     if action.get("action") in ("bulk_schedule", "multi_broker_task"):
         kb = [[
-            InlineKeyboardButton("✅ Execute", callback_data="confirm"),
+            InlineKeyboardButton("Execute", callback_data="confirm"),
             InlineKeyboardButton("❌ Cancel",  callback_data="cancel"),
         ]]
         sent = await update.message.reply_text(
@@ -6905,7 +6902,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Сохраняем и просим подтвердить
     kb = [[
-        InlineKeyboardButton("✅ Execute", callback_data="confirm"),
+        InlineKeyboardButton("Execute", callback_data="confirm"),
         InlineKeyboardButton("❌ Cancel",    callback_data="cancel"),
     ]]
     sent = await update.message.reply_text(
@@ -7126,7 +7123,7 @@ def _country_iso(country: str) -> str:
 
 
 def _extract_broker_id(broker_name: str) -> int:
-    """Извлечь числовой ID брокера из строки типа '2251 - Fugazi CH - CRG 🟩'."""
+    """Извлечь числовой ID брокера из строки типа '2251 - Fugazi CH - CRG'."""
     m = re.match(r'(\d+)', broker_name.strip())
     return int(m.group(1)) if m else 0
 
@@ -7486,7 +7483,7 @@ async def _build_report() -> str:
         total = sum(aff_counts.values())
         cap = info.get("cap")
         log.info(f"_build_report MATCH: broker={broker_name!r} country={country!r} → matched {total} leads, aff_counts={aff_counts}")
-        lines.append(f"{flag} *{country_iso}* — {broker_name}")
+        lines.append(f"{flag} *{country_iso}* — {broker_name.replace('🟩', '').replace('🟢', '').strip()}")
         if cap:
             lines.append(f"  Leads: {total}/{cap}")
         else:
@@ -7573,7 +7570,7 @@ async def _report_loop(bot):
                             aff_str = "/".join(info.get("affs", []))
                             lead_aff = str(found_lead.get("affid", "?"))
                             time_str = (datetime.datetime.utcnow() + datetime.timedelta(hours=3)).strftime("%H:%M")
-                            msg = f"▶️ *STARTED*\n{broker_name} {flag}{country_iso}"
+                            msg = f"▶️ *STARTED*\n{broker_name.replace('🟩', '').replace('🟢', '').strip()} {flag}{country_iso}"
                             if aff_str:
                                 msg += f" (aff {aff_str})"
                             # Если первый лид от аффа вне ротации — показываем
