@@ -6565,6 +6565,16 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not (msg_has_broker_name and (msg_has_command or msg_has_time)):
                 return
 
+        # Бот не управляет ротациями — игнорируем если это ТОЛЬКО про ротацию
+        # (без реальных CRM-команд типа cap/hours/map/funnels)
+        if "rotation" in text_lower_orig or "ротаци" in text_lower_orig:
+            rotation_has_crm = bool(
+                msg_has_time or msg_has_price or
+                any(kw in text_lower_orig for kw in ("cap", "map", "funnel", "slug", "hour", "schedule", "price", "прайс", "кап"))
+            )
+            if not rotation_has_crm:
+                return
+
         # Вопросы (заканчиваются на ?) без явного имени брокера и команды — игнорируем
         if text_lower_orig.rstrip().endswith("?"):
             if not (msg_has_broker_name and (msg_has_command or msg_has_time)):
