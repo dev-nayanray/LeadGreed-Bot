@@ -6797,11 +6797,28 @@ def _load_rotations():
         try:
             with open(path, "r") as f:
                 data = json.load(f)
-            today_rotations.clear()
-            today_rotations.update(data)
-            log.info(f"Loaded {len(today_rotations)} rotations from {path}")
+            # Поддерживаем два формата: просто ротации или {rotations, fired_started}
+            if "rotations" in data:
+                today_rotations.clear()
+                today_rotations.update(data["rotations"])
+                fired_started.clear()
+                fired_started.update(data.get("fired_started", []))
+            else:
+                today_rotations.clear()
+                today_rotations.update(data)
+            log.info(f"Loaded {len(today_rotations)} rotations, {len(fired_started)} fired from {path}")
         except Exception as e:
             log.warning(f"Failed to load rotations: {e}")
+
+
+def _save_rotations():
+    """Сохранить ротации и fired_started в JSON файл."""
+    path = "/root/auto-b2026/rotations_today.json"
+    try:
+        with open(path, "w") as f:
+            json.dump({"rotations": today_rotations, "fired_started": list(fired_started)}, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        log.warning(f"Failed to save rotations: {e}")
 
 
 REPORT_CHAT_ID = -5132784554  # Notifications чат
@@ -7278,6 +7295,7 @@ async def _report_loop(bot):
 
                         if b_leads > 0 or aff_leads > 0:
                             fired_started.add(broker_name)
+                            _save_rotations()
                             flag = _country_flag(country)
                             country_iso = _country_iso(country)
                             aff_str = "/".join(info.get("affs", []))
