@@ -7043,10 +7043,10 @@ async def _fetch_first_lead(broker_name: str, aff_ids: list, country: str) -> st
         return []
 
 
-async def _fetch_leads_count(aff_id: str, country: str) -> int:
-    """Получить количество лидов для аффа в конкретной стране через детальный API."""
+async def _fetch_all_leads_today() -> list:
+    """Fetch all detailed leads for today in one request. Client-side filtering."""
     if not _page:
-        return 0
+        return []
 
     now = datetime.datetime.now()
     from_dt = now.strftime("%Y-%m-%d 00:00:00")
@@ -7061,13 +7061,13 @@ async def _fetch_leads_count(aff_id: str, country: str) -> int:
         "test_leads": "exclude",
         "trafficType": "all",
         "page": 1,
-        "per_page": 1,
+        "per_page": 1000,
         "breakdowns": [],
-        "ord": [{"field": "id", "direction": "desc"}],
+        "ord": [{"field": "id", "direction": "asc"}],
         "filter": {"isGlobalSearch": False, "globalSearchValues": [], "search": "", "searchType": "single", "searchBy": "email", "converted": "all", "successful": "all", "queued": "all"},
-        "fields": ["affid", "country"],
-        "narrowDownAffiliate": int(aff_id) if str(aff_id).isdigit() else None,
-        "narrowDownCountry": country if country else None,
+        "fields": ["affid", "country", "broker_name", "email", "broker_id"],
+        "narrowDownAffiliate": None,
+        "narrowDownCountry": None,
         "narrowDownBroker": None,
         "from_page": "stats",
     }
@@ -7093,10 +7093,16 @@ async def _fetch_leads_count(aff_id: str, country: str) -> int:
         }}""")
 
         if result and isinstance(result, dict):
-            return result.get("total", 0)
+            leads = result.get("data", [])
+            total = result.get("total", 0)
+            log.info(f"_fetch_all_leads_today: got {len(leads)} leads (total={total})")
+            return leads
+        if result and isinstance(result, list):
+            log.info(f"_fetch_all_leads_today: got {len(result)} leads (list)")
+            return result
     except Exception as e:
-        log.warning(f"_fetch_leads_count error: {e}")
-    return 0
+        log.warning(f"_fetch_all_leads_today error: {e}")
+    return []
 
 
 async def _fetch_crm_stats(group_by: str) -> list:
@@ -7159,70 +7165,22 @@ async def _fetch_crm_stats(group_by: str) -> list:
     return []
 
 
-async def _fetch_leads_count(broker_name: str, aff_id: str, country: str) -> int:
-    """Считаем лиды для конкретного аффа в конкретной стране у конкретного брокера."""
-    if not _page:
-        return 0
-
-    now = datetime.datetime.now()
-    from_dt = now.strftime("%Y-%m-%d 00:00:00")
-    to_dt = now.strftime("%Y-%m-%d 23:59:59")
-
-    payload = {
-        "successfullLeadsOnly": False,
-        "hideDuplicateFailedLeads": False,
-        "from_datetime": from_dt,
-        "to_datetime": to_dt,
-        "timezone": "Europe/Istanbul",
-        "test_leads": "exclude",
-        "trafficType": "all",
-        "page": 1,
-        "per_page": 1,
-        "breakdowns": [],
-        "ord": [{"field": "id", "direction": "desc"}],
-        "filter": {"isGlobalSearch": False, "globalSearchValues": [], "search": "", "searchType": "single", "searchBy": "email", "converted": "all", "successful": "all", "queued": "all"},
-        "fields": ["affid", "country", "broker_name"],
-        "narrowDownAffiliate": int(aff_id) if aff_id.isdigit() else None,
-        "narrowDownCountry": country if country else None,
-        "narrowDownBroker": None,
-        "from_page": "stats",
-    }
-
-    try:
-        payload_json = json.dumps(payload)
-        result = await _page.evaluate(f"""async () => {{
-            try {{
-                const xsrf = document.cookie.split('; ').find(r => r.startsWith('XSRF-TOKEN='))?.split('=')[1];
-                const decodedXsrf = xsrf ? decodeURIComponent(xsrf) : '';
-                const resp = await fetch('/api/stats', {{
-                    method: 'POST',
-                    headers: {{
-                        'Content-Type': 'application/json',
-                        'Accept': 'application/json',
-                        'X-XSRF-TOKEN': decodedXsrf
-                    }},
-                    body: {json.dumps(payload_json)}
-                }});
-                if (!resp.ok) return null;
-                return await resp.json();
-            }} catch(e) {{ return null; }}
-        }}""")
-
-        if result and isinstance(result, dict):
-            total = result.get("total", 0)
-            # Считаем только лиды с нужным брокером клиент-сайд
-            leads = result.get("data", [])
-            # total из API — но нам нужна агрегация, используем отдельный запрос
-            return result.get("total", 0)
-    except Exception as e:
-        log.warning(f"_fetch_leads_count error: {e}")
-    return 0
-
-
 async def _build_report() -> str:
-    """Сформировать текст отчёта по лидам — только по активным ротациям."""
+    """Сформировать текст отчёта по лидам — только по активным ротациям.
+    Один запрос за все лиды дня → клиент-сайд подсчёт по affid + country + broker.
+    """
     if not today_rotations:
         return ""
+
+    all_leads = await _fetch_all_leads_today()
+    log.info(f"_build_report: {len(all_leads)} total leads fetched for client-side filtering")
+
+    # Собираем все aff_ids из ротаций (int для сравнения)
+    rotation_aff_ids = set()
+    for info in today_rotations.values():
+        for a in info.get("affs", []):
+            if str(a).isdigit():
+                rotation_aff_ids.add(int(a))
 
     now = datetime.datetime.utcnow() + datetime.timedelta(hours=3)
     time_str = now.strftime("%H:%M")
@@ -7231,21 +7189,35 @@ async def _build_report() -> str:
     for broker_name, info in today_rotations.items():
         country = info.get("country", "")
         aff_ids = info.get("affs", [])
+        aff_ids_int = [int(a) for a in aff_ids if str(a).isdigit()]
 
         country_iso = _country_iso(country)
         flag = _country_flag(country)
 
-        # Считаем лиды по каждому аффу через детальный API
-        aff_counts = {}
-        for aff_id in aff_ids:
-            count = await _fetch_leads_count(aff_id, country)
-            aff_counts[aff_id] = count
+        # Клиент-сайд подсчёт: совпадение affid + country + broker
+        aff_counts = {a: 0 for a in aff_ids}
+        for lead in all_leads:
+            lead_affid = lead.get("affid")
+            if lead_affid not in aff_ids_int:
+                continue
+            # Проверяем страну
+            lead_country = (lead.get("country") or "").lower()
+            if country and country.lower() not in lead_country and lead_country not in country.lower():
+                continue
+            # Проверяем брокера (частичное совпадение)
+            lead_broker = (lead.get("broker_name") or "").lower()
+            if not (broker_name.lower() in lead_broker or lead_broker in broker_name.lower()):
+                continue
+            # Нашли подходящий лид — считаем
+            aff_key = str(lead_affid)
+            if aff_key in aff_counts:
+                aff_counts[aff_key] += 1
 
         total = sum(aff_counts.values())
         lines.append(f"{flag} *{country_iso}* — {broker_name}")
         lines.append(f"  Leads: {total}")
-        for aff_id, count in aff_counts.items():
-            lines.append(f"    {aff_id} — {count}")
+        for aff_id in aff_ids:
+            lines.append(f"    {aff_id} — {aff_counts.get(aff_id, 0)}")
         lines.append("")
 
     return "\n".join(lines).strip()
@@ -7276,43 +7248,41 @@ async def _report_loop(bot):
             if today_rotations:
                 unfired = [k for k in today_rotations if k not in fired_started]
                 if unfired:
-                    broker_data = await _fetch_crm_stats("brokers")
-                    aff_data = await _fetch_crm_stats("affiliates")
-                    broker_index = {b["name"].lower(): b for b in broker_data}
-                    aff_index = {a["name"].lower(): a for a in aff_data}
+                    all_leads = await _fetch_all_leads_today()
 
                     for broker_name in unfired:
                         info = today_rotations[broker_name]
                         country = info.get("country", "")
+                        aff_ids_int = [int(a) for a in info.get("affs", []) if str(a).isdigit()]
 
-                        # Ищем брокера
-                        b_leads = 0
-                        for key, rec in broker_index.items():
-                            if broker_name.lower() in key or key in broker_name.lower():
-                                b_leads = rec.get("total_leads", 0)
-                                break
+                        # Ищем хотя бы один лид с нужным affid + country + broker
+                        found_lead = None
+                        for lead in all_leads:
+                            lead_affid = lead.get("affid")
+                            if lead_affid not in aff_ids_int:
+                                continue
+                            lead_country = (lead.get("country") or "").lower()
+                            if country and country.lower() not in lead_country and lead_country not in country.lower():
+                                continue
+                            lead_broker = (lead.get("broker_name") or "").lower()
+                            if not (broker_name.lower() in lead_broker or lead_broker in broker_name.lower()):
+                                continue
+                            found_lead = lead
+                            break
 
-                        # Ищем аффов
-                        aff_leads = 0
-                        for aff_id in info.get("affs", []):
-                            for key, rec in aff_index.items():
-                                if f"({aff_id})" in key or key.startswith(f"{aff_id} ") or key.startswith(f"{aff_id}-"):
-                                    aff_leads += rec.get("total_leads", 0)
-                                    break
-
-                        if b_leads > 0 or aff_leads > 0:
+                        if found_lead:
                             fired_started.add(broker_name)
                             _save_rotations()
                             flag = _country_flag(country)
                             country_iso = _country_iso(country)
                             aff_str = "/".join(info.get("affs", []))
-                            time_str = datetime.datetime.now().strftime("%H:%M")
+                            time_str = (datetime.datetime.utcnow() + datetime.timedelta(hours=3)).strftime("%H:%M")
                             msg = f"▶️ *STARTED*\n{broker_name} {flag}{country_iso}"
                             if aff_str:
                                 msg += f" (aff {aff_str})"
                             msg += f" • {time_str}"
-                            # Добавляем email первого лида
-                            first_email = await _fetch_first_lead(broker_name, info.get("affs", []), country)
+                            # Email первого лида — уже нашли его
+                            first_email = found_lead.get("email", "")
                             if first_email:
                                 msg += f"\n📧 {first_email}"
                             await bot.send_message(
@@ -7336,8 +7306,6 @@ async def _report_loop(bot):
                     log.info(f"Report sent to {REPORT_CHAT_ID}")
                 await asyncio.sleep(60)
         except Exception as e:
-            log.warning(f"Report loop error: {e}")
-            await asyncio.sleep(60)
             log.warning(f"Report loop error: {e}")
             await asyncio.sleep(60)
 
