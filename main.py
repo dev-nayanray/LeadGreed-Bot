@@ -198,6 +198,7 @@ SYSTEM_PROMPT = """
   • "Helios ID 1050" → broker_ids: ["Helios"], countries: ["Indonesia"], amount: 1050. НЕ broker_ids: ["Helios ID"]!
   • "Theta NL 1650" → broker_ids: ["Theta"], countries: ["Netherlands"], amount: 1650
   Правило: 2-буквенный ISO код (HR, DE, FR, ID, NL, CZ, ES...) — это ВСЕГДА страна, НИКОГДА не часть имени брокера. Единственное исключение — "MM affiliates" (это имя брокера, не Мьянма).
+- ВАЖНО: Никогда не додумывай и не расширяй имя брокера. Используй ТОЧНО то что написал пользователь. "BB" → broker_ids: ["BB"], НЕ "BBin". "MN" → broker_ids: ["MN"], НЕ "MNsomething". Короткие имена (2-3 буквы) — это реальные названия брокеров.
 - ВАЖНО: Имена брокеров могут состоять из НЕСКОЛЬКИХ слов, но ТОЛЬКО в следующих случаях:
   • Суффикс CRG/CPA/CPL: "Fintrix CRG", "Nexus CPA", "Helios CRG", "Avelux CRG", "Clickbait CRG"
   • Специальные имена: "Swin FR CRG", "Swin EN CRG", "Swin FR CRG duplicate", "Swinftd CRG FR", "Swinftd CRG FR DUPLICATE", "Swinftd CRG ENG", "Swinftd FLAT FR", "Swinftd FLAT ENG", "Theta Holding", "MM affiliates", "PRX_AVE", "PRX_AVE CPA"
@@ -847,6 +848,13 @@ def parse_command(text: str) -> dict:
     try:
         result = json.loads(raw)
         log.info(f"parse_command result: action={result.get('action')}, brokers={result.get('broker_ids')}, country_hours count={len(result.get('country_hours', []))}")
+
+        # Валидация: отклоняем если имя брокера слишком короткое (2 символа или меньше)
+        broker_ids = result.get("broker_ids", [])
+        if broker_ids and all(len(str(b).strip()) <= 2 and not str(b).strip().isdigit() for b in broker_ids):
+            log.info(f"parse_command: rejected — broker name too short: {broker_ids}")
+            return {"action": "unknown"}
+
         return result
     except Exception as e:
         log.error(f"parse_command JSON parse error: {e}\nRaw: {raw[:300]}")
@@ -3695,6 +3703,12 @@ async def action_add_affiliate_mapping(broker_id: str, affiliate_id: str,
 
     # ── 4. Сохраняем ──────────────────────────
     try:
+        # Очищаем стейл-нотификации от предыдущих действий (cap/hours)
+        await page.evaluate("""() => {
+            document.querySelectorAll('.noty_bar, .noty_layout, [class*="noty"]').forEach(el => el.remove());
+        }""")
+        await page.wait_for_timeout(300)
+
         save_btn = await page.wait_for_selector(
             ".modal button[type='submit'], .modal-footer button[type='submit'], "
             ".modal .btn-ladda.btn-success",
@@ -6545,7 +6559,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg_has_time = bool(re.search(r'\d{1,2}:\d{2}\s*[-–]\s*\d{1,2}:\d{2}', text) or
                             re.search(r'\d{1,2}\.\d{2}\s*[-–]\s*\d{1,2}\.\d{2}', text) or
                             re.search(r'\bat\s+\d{1,2}:\d{2}', text_lower_orig))
-        msg_has_broker_name = bool(re.search(r'\b(legion|nexus|capitan|fintrix|capex|swin|helios|axia|fugazi|ave|theta|imperius|emp|cmt|glb|mn|marsi|farah|roibees|clickbait|avelux|mediaNow|universo|fusion|ventury|naga|dftradegroup)\b', text_lower_orig, re.IGNORECASE))
+        msg_has_broker_name = bool(re.search(r'\b(legion|nexus|capitan|fintrix|capex|swin|helios|axia|fugazi|ave|theta|imperius|emp|cmt|glb|mn|marsi|farah|roibees|clickbait|avelux|mediaNow|universo|fusion|ventury|naga|dftradegroup|bb|monstrack|kaya)\b', text_lower_orig, re.IGNORECASE))
 
         # Имя брокера одно по себе — не команда. Нужно ещё что-то (ISO код, число, время, ключевое слово)
         msg_has_action_context = bool(
@@ -7249,11 +7263,7 @@ async def _build_report() -> str:
         log.info(f"_build_report MATCH: broker={broker_name!r} country={country!r} → matched {total} leads, aff_counts={aff_counts}")
         lines.append(f"{flag} *{country_iso}* — {broker_name}")
         if cap:
-            # После 14:00 GMT+3: если лидов < 50% капы — предупреждение
-            cap_warn = ""
-            if now.hour >= 14 and total < cap * 0.5:
-                cap_warn = " 📉"
-            lines.append(f"  Leads: {total}/{cap}{cap_warn}")
+            lines.append(f"  Leads: {total}/{cap}")
         else:
             lines.append(f"  Leads: {total}")
 
