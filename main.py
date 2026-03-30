@@ -7249,7 +7249,11 @@ async def _build_report() -> str:
         log.info(f"_build_report MATCH: broker={broker_name!r} country={country!r} → matched {total} leads, aff_counts={aff_counts}")
         lines.append(f"{flag} *{country_iso}* — {broker_name}")
         if cap:
-            lines.append(f"  Leads: {total}/{cap}")
+            # После 14:00 GMT+3: если лидов < 50% капы — предупреждение
+            cap_warn = ""
+            if now.hour >= 14 and total < cap * 0.5:
+                cap_warn = " 📉"
+            lines.append(f"  Leads: {total}/{cap}{cap_warn}")
         else:
             lines.append(f"  Leads: {total}")
 
@@ -7261,7 +7265,7 @@ async def _build_report() -> str:
             lines.append(f"    {aff_id} — {count}{warn}")
             shown.add(aff_id)
 
-        # Потом остальные аффы (вне ротации) — если есть лиды
+        # Потом остальные аффы — если есть лиды
         for aff_id, count in sorted(aff_counts.items(), key=lambda x: -x[1]):
             if aff_id not in shown and count > 0:
                 lines.append(f"    {aff_id} — {count}")
