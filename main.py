@@ -5879,6 +5879,9 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                     base_path=mb_broker_base,
                                 )
                             sub_parts.append(f"🎯 Cap: {_inject_country_flag(cap_msg)}")
+                            # Обновляем капу в ротациях если успешно
+                            if "❌" not in cap_msg and task.get("cap"):
+                                _update_rotation_cap(_last_broker_full_name or t_broker, t_country, int(task["cap"]))
 
                         # Часы
                         if task.get("start"):
@@ -6425,6 +6428,9 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                             sub_results.append(f"⚠️ {no_country}: no existing cap — asked for confirmation")
                         else:
                             sub_results.append(sub_msg)
+                            # Обновляем капу в ротациях если успешно
+                            if "❌" not in sub_msg and cap_val is not None:
+                                _update_rotation_cap(_last_broker_full_name or str(broker_id), cc.get("country", ""), int(cap_val))
                     msg = "\n".join(sub_results)
 
             elif a == "lead_task":
@@ -6470,6 +6476,9 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                     base_path=lt_broker_base,
                                 )
                             sub_results.append(f"🎯 Cap: {_inject_country_flag(sub_msg)}")
+                            # Обновляем капу в ротациях если успешно
+                            if "❌" not in sub_msg and cap_val is not None:
+                                _update_rotation_cap(_last_broker_full_name or str(broker_id), cc.get("country", ""), int(cap_val))
                         except Exception as cap_err:
                             sub_results.append(f"❌ Cap error: {cap_err}")
 
@@ -7099,6 +7108,17 @@ def _save_tomorrow_rotations():
         log.warning(f"Failed to save tomorrow rotations: {e}")
 
 
+def _update_rotation_cap(broker_display: str, country: str, new_cap: int):
+    """Обновить капу в ротациях после успешного change_caps."""
+    broker_id = _extract_broker_id(broker_display)
+    for rot_key, rot_val in today_rotations.items():
+        if _extract_broker_id(rot_key) == broker_id and country.lower() in rot_val.get("country", "").lower():
+            rot_val["cap"] = new_cap
+            _save_rotations()
+            log.info(f"Rotation cap updated: {rot_key} → {new_cap}")
+            return
+
+
 REPORT_CHAT_ID = -1003811333656  # Notifications чат (supergroup)
 
 _COUNTRY_ISO = {
@@ -7633,7 +7653,7 @@ async def _report_loop(bot):
                             log.info(f"Started notification: {broker_name} {country_iso}")
 
             # Только с 08:00 до 20:00 и каждые 15 минут
-            if 8 <= local_hour < 20 and local_minute % 15 == 0:
+            if 10 <= local_hour < 20 and local_minute % 15 == 0:
                 report = await _build_report()
                 if report:
                     await bot.send_message(
