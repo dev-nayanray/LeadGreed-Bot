@@ -937,7 +937,9 @@ async def do_login():
 async def find_and_open_broker(page: Page, broker_id: str, country_hint: str = None) -> Optional[str]:
     """Wrapper с кэшированием результата."""
     import time
-    cache_key = str(broker_id).strip().lower()
+    # Кэш-ключ включает LATAM-признак чтобы Axia и Axia Latam кэшировались отдельно
+    is_latam_hint = country_hint and country_hint.lower() in LATAM_COUNTRIES
+    cache_key = str(broker_id).strip().lower() + ("_latam" if is_latam_hint else "")
     if cache_key in _broker_path_cache:
         cached_path, cached_time, cached_name = _broker_path_cache[cache_key]
         if time.time() - cached_time < _BROKER_CACHE_TTL:
@@ -948,7 +950,7 @@ async def find_and_open_broker(page: Page, broker_id: str, country_hint: str = N
             return cached_path
     result = await _find_and_open_broker_impl(page, broker_id, country_hint)
     if result:
-        _cache_broker_path(broker_id, result, _last_broker_full_name)
+        _cache_broker_path(cache_key, result, _last_broker_full_name)
     return result
 
 
@@ -3910,12 +3912,13 @@ async def action_add_affiliate_mapping(broker_id: str, affiliate_id: str,
 
 async def action_add_funnel_slug_override(broker_id: str, override_codes: list,
                                            countries: list = None, affiliate_id: str = None,
-                                           slug: str = None, base_path: str = None) -> str:
+                                           slug: str = None, base_path: str = None, country_hint: str = None) -> str:
     """Добавить API Offer Slug Override для брокера."""
     page = await get_page()
 
     if not base_path:
-        base_path = await find_and_open_broker(page, broker_id)
+        hint = country_hint or (countries[0] if countries else None)
+        base_path = await find_and_open_broker(page, broker_id, country_hint=hint)
     if not base_path:
         return f"❌ Broker '{broker_id}' not found."
 
@@ -6294,7 +6297,8 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                             broker_id=str(broker_id),
                             override_codes=override_codes,
                             countries=countries_list if countries_list else None,
-                            affiliate_id=str(one_aff)
+                            affiliate_id=str(one_aff),
+                            country_hint=countries_list[0] if countries_list else None
                         )
                         sub_results.append(f"aff {one_aff}: {sub_msg}")
                     msg = "\n".join(sub_results)
@@ -6303,7 +6307,8 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                         broker_id=str(broker_id),
                         override_codes=override_codes,
                         countries=countries_list if countries_list else None,
-                        affiliate_id=aff_id
+                        affiliate_id=aff_id,
+                        country_hint=countries_list[0] if countries_list else None
                     )
             elif a == "change_caps":
                 cc_list = action.get("country_caps", [])
@@ -6319,7 +6324,8 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                     sub_results = []
                     # Ищем брокера один раз
                     page = await get_page()
-                    caps_broker_base = await find_and_open_broker(page, str(broker_id))
+                    first_country = cc_list[0].get("country", "") if cc_list else ""
+                    caps_broker_base = await find_and_open_broker(page, str(broker_id), country_hint=first_country)
                     for cc in cc_list:
                         delta_val  = cc.get("delta")
                         cap_val    = cc.get("cap")
