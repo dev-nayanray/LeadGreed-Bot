@@ -6838,7 +6838,7 @@ def _save_rotations():
         log.warning(f"Failed to save rotations: {e}")
 
 
-REPORT_CHAT_ID = -5132784554  # Notifications чат
+REPORT_CHAT_ID = -1003811333656  # Notifications чат (supergroup)
 
 _COUNTRY_ISO = {
     "germany": "DE", "united kingdom": "GB", "uk": "GB", "australia": "AU",
