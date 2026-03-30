@@ -7044,9 +7044,21 @@ async def _fetch_first_lead(broker_name: str, aff_ids: list, country: str) -> st
 
 
 async def _fetch_all_leads_today() -> list:
-    """Fetch all detailed leads for today in one request. Client-side filtering."""
-    if not _page:
+    """Fetch all detailed leads for today via aiohttp (independent of page state)."""
+    import aiohttp
+    import urllib.parse
+
+    if not _context:
+        log.warning("_fetch_all_leads_today: no browser context")
         return []
+
+    cookies_list = await _context.cookies()
+    cookies = {c["name"]: c["value"] for c in cookies_list}
+    xsrf = cookies.get("XSRF-TOKEN", "")
+    try:
+        xsrf = urllib.parse.unquote(xsrf)
+    except Exception:
+        pass
 
     now = datetime.datetime.now()
     from_dt = now.strftime("%Y-%m-%d 00:00:00")
@@ -7072,34 +7084,32 @@ async def _fetch_all_leads_today() -> list:
         "from_page": "stats",
     }
 
-    try:
-        payload_json = json.dumps(payload)
-        result = await _page.evaluate(f"""async () => {{
-            try {{
-                const xsrf = document.cookie.split('; ').find(r => r.startsWith('XSRF-TOKEN='))?.split('=')[1];
-                const decodedXsrf = xsrf ? decodeURIComponent(xsrf) : '';
-                const resp = await fetch('/api/stats', {{
-                    method: 'POST',
-                    headers: {{
-                        'Content-Type': 'application/json',
-                        'Accept': 'application/json',
-                        'X-XSRF-TOKEN': decodedXsrf
-                    }},
-                    body: {json.dumps(payload_json)}
-                }});
-                if (!resp.ok) return null;
-                return await resp.json();
-            }} catch(e) {{ return null; }}
-        }}""")
+    headers = {
+        "Content-Type": "application/json;charset=utf-8",
+        "Accept": "application/json, text/plain, */*",
+        "X-XSRF-TOKEN": xsrf,
+        "Referer": f"{CRM_URL}/stats/details",
+        "Origin": CRM_URL,
+    }
 
-        if result and isinstance(result, dict):
-            leads = result.get("data", [])
-            total = result.get("total", 0)
-            log.info(f"_fetch_all_leads_today: got {len(leads)} leads (total={total})")
-            return leads
-        if result and isinstance(result, list):
-            log.info(f"_fetch_all_leads_today: got {len(result)} leads (list)")
-            return result
+    try:
+        async with aiohttp.ClientSession(cookies=cookies) as session:
+            async with session.post(
+                f"{CRM_URL}/api/stats",
+                json=payload,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=30),
+                ssl=False
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    leads = data.get("data", []) if isinstance(data, dict) else data
+                    total = data.get("total", len(leads)) if isinstance(data, dict) else len(leads)
+                    log.info(f"_fetch_all_leads_today: got {len(leads)} leads (total={total})")
+                    return leads
+                else:
+                    text = await resp.text()
+                    log.warning(f"_fetch_all_leads_today: HTTP {resp.status}: {text[:200]}")
     except Exception as e:
         log.warning(f"_fetch_all_leads_today error: {e}")
     return []
