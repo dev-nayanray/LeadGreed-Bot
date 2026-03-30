@@ -6857,6 +6857,10 @@ _COUNTRY_ISO = {
     "morocco": "MA", "croatia": "HR", "serbia": "RS", "slovakia": "SK",
     "slovenia": "SI", "bulgaria": "BG", "latvia": "LV", "lithuania": "LT",
     "estonia": "EE", "moldova": "MD", "georgia": "GE", "armenia": "AM",
+    "jamaica": "JM", "ecuador": "EC", "venezuela": "VE", "bolivia": "BO",
+    "paraguay": "PY", "uruguay": "UY", "costa rica": "CR", "panama": "PA",
+    "dominican republic": "DO", "guatemala": "GT", "honduras": "HN",
+    "el salvador": "SV", "nicaragua": "NI", "cuba": "CU", "trinidad and tobago": "TT",
 }
 
 # Флаги стран по ISO коду или полному названию
