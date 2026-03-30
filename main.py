@@ -111,6 +111,10 @@ SYSTEM_PROMPT = """
 - change_hours  — изменить часы работы broker
 - add_hours     — добавить hours for новой страны
 - close_days    — закрыть конкретные дни (убрать галочки) для страны
+- reopen_days   — открыть (включить) закрытые дни обратно. Часы уже сохранены в CRM, нужно только включить чекбокс.
+  "reopen BB in CA" / "open back BB CA" / "BB CA reopen" / "BB CA open days" → {"action": "reopen_days", "broker_ids": ["BB"], "countries_days": [{"country": "Canada", "days_to_close": ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]}]}
+  Используй тот же формат countries_days что и close_days. Если дни не указаны — открыть ВСЕ дни недели.
+  Триггеры: "reopen", "open back", "open days", "bring back hours", "restore hours", "unclose"
 - add_revenue   — добавить прайс/выплату для страны broker
 - toggle_broker — включить / выключить broker
   "set Legion inactive" / "deactivate Legion" / "disable Capitan" → {"action": "toggle_broker", "broker_ids": ["Legion"], "active": false}
@@ -848,12 +852,6 @@ def parse_command(text: str) -> dict:
     try:
         result = json.loads(raw)
         log.info(f"parse_command result: action={result.get('action')}, brokers={result.get('broker_ids')}, country_hours count={len(result.get('country_hours', []))}")
-
-        # Валидация: отклоняем если имя брокера слишком короткое (2 символа или меньше)
-        broker_ids = result.get("broker_ids", [])
-        if broker_ids and all(len(str(b).strip()) <= 2 and not str(b).strip().isdigit() for b in broker_ids):
-            log.info(f"parse_command: rejected — broker name too short: {broker_ids}")
-            return {"action": "unknown"}
 
         return result
     except Exception as e:
@@ -3443,6 +3441,149 @@ async def action_close_days(broker_id: str, country: str, days_to_close: list, c
     return await _close_days_for_pencil(page, target_pencil, target_name, days_to_close)
 
 
+async def _reopen_days_for_pencil(page, pencil, country_name: str, days_to_reopen: list) -> str:
+    """Вспомогательная: открыть модалку по карандашу и включить дни (обратная close)."""
+    await pencil.click()
+    await page.wait_for_timeout(600)
+
+    try:
+        modal = await page.wait_for_selector(".modal-body, [role='dialog']", timeout=4000)
+    except Exception:
+        return f"❌ {country_name}: modal did not open."
+
+    await page.wait_for_timeout(300)
+
+    days_lower = [d.lower() for d in days_to_reopen]
+    checkboxes = await modal.query_selector_all("input[type='checkbox']")
+    opened = []
+    already_open = []
+    not_found = []
+
+    found_days = set()
+    for cb in checkboxes:
+        label_text = await cb.evaluate("el => el.closest('label,tr,div')?.textContent?.toLowerCase() || ''")
+        if "no traffic" in label_text:
+            continue
+        for day in days_lower:
+            if day in label_text:
+                found_days.add(day)
+                if not await cb.is_checked():
+                    await cb.evaluate("el => el.click()")
+                    await page.wait_for_timeout(100)
+                    opened.append(day.capitalize())
+                else:
+                    already_open.append(day.capitalize())
+                break
+
+    for day in days_lower:
+        if day not in found_days:
+            not_found.append(day.capitalize())
+
+    if not opened:
+        await _close_modal(page)
+        parts = []
+        if already_open:
+            if len(already_open) == len(days_to_reopen):
+                parts.append("already open")
+            else:
+                parts.append(f"already open: {', '.join(already_open)}")
+        if not_found:
+            parts.append(f"not found: {', '.join(not_found)}")
+        return f"⚠️ {country_name}: {' | '.join(parts)}."
+
+    try:
+        save_btn = await page.wait_for_selector("text=SAVE OPENING HOURS", timeout=3000)
+        await save_btn.click()
+        await page.wait_for_timeout(700)
+        parts = []
+        if len(opened) == len(days_to_reopen):
+            parts.append("all days reopened")
+        else:
+            parts.append(f"reopened: {', '.join(opened)}")
+        if already_open:
+            parts.append(f"already open: {', '.join(already_open)}")
+        if not_found:
+            parts.append(f"not found: {', '.join(not_found)}")
+        return f"✅ {country_name}: {' | '.join(parts)}."
+    except Exception:
+        await _close_modal(page)
+        return f"⚠️ {country_name}: Save button not found."
+
+
+async def action_reopen_days(broker_id: str, country: str, days_to_reopen: list, country_hint: str = None, base_path: str = None) -> str:
+    """Открыть (включить) конкретные дни для страны брокера — обратная close_days."""
+    page = await get_page()
+
+    if not base_path:
+        base_path = await find_and_open_broker(page, broker_id, country_hint=country_hint or country)
+    if not base_path:
+        return f"❌ Broker '{broker_id}' not found. Nothing changed."
+
+    oh_url = f"{CRM_URL.rstrip('/')}{base_path}/opening_hours"
+    await page.goto(oh_url, wait_until="domcontentloaded", timeout=60000)
+
+    try:
+        await page.wait_for_selector(
+            "button.btn-primary.btn-sm, button.btn-outline-primary.btn-sm, button.btn.btn-sm.btn-primary, button.btn.btn-sm.btn-outline-primary",
+            timeout=12000
+        )
+    except Exception:
+        pass
+    await page.wait_for_timeout(500)
+
+    log.info(f"Reopening days: {days_to_reopen} для страны: {country}")
+
+    edit_buttons = await page.query_selector_all("button.btn-primary.btn-sm, button.btn-outline-primary.btn-sm, button.btn.btn-sm.btn-primary, button.btn.btn-sm.btn-outline-primary")
+    pencil_buttons = []
+    for btn in edit_buttons:
+        if not (await btn.inner_text()).strip():
+            c_name = await btn.evaluate("""el => {
+                const row = el.closest('tr');
+                return row ? row.querySelector('td')?.innerText?.trim() : '';
+            }""")
+            pencil_buttons.append((btn, c_name))
+
+    log.info(f"Найдено стран: {[n for _, n in pencil_buttons]}")
+
+    if country.lower() == "all":
+        if not pencil_buttons:
+            return "❌ Countries not found for this broker."
+        results = []
+        for pencil, c_name in pencil_buttons:
+            await page.wait_for_timeout(300)
+            fresh_buttons = await page.query_selector_all("button.btn-primary.btn-sm, button.btn-outline-primary.btn-sm, button.btn.btn-sm.btn-primary, button.btn.btn-sm.btn-outline-primary")
+            target = None
+            for btn in fresh_buttons:
+                if not (await btn.inner_text()).strip():
+                    name = await btn.evaluate("""el => {
+                        const row = el.closest('tr');
+                        return row ? row.querySelector('td')?.innerText?.trim() : '';
+                    }""")
+                    if name.strip().lower() == c_name.strip().lower():
+                        target = btn
+                        break
+            if not target:
+                results.append(f"⚠️ {c_name}: pencil not found after DOM update.")
+                continue
+            msg = await _reopen_days_for_pencil(page, target, c_name, days_to_reopen)
+            results.append(msg)
+            log.info(msg)
+        return "\n".join(results)
+
+    target_pencil = None
+    target_name = country
+    for pencil, c_name in pencil_buttons:
+        if country.lower() in c_name.lower():
+            target_pencil = pencil
+            target_name = c_name
+            break
+
+    if not target_pencil:
+        return f"❌ Country '{country}' not found for this broker. Nothing changed."
+
+    return await _reopen_days_for_pencil(page, target_pencil, target_name, days_to_reopen)
+
+
 async def action_add_affiliate_mapping(broker_id: str, affiliate_id: str,
                                         override_code: str, country: str = None,
                                         base_path: str = None) -> str:
@@ -5186,6 +5327,18 @@ def build_confirm_text(action: dict) -> str:
             f"Confirm?"
         )
 
+    if a == "reopen_days":
+        brokers = ", ".join(str(b) for b in action.get("broker_ids", []))
+        cd_list = action.get("countries_days", [])
+        lines = "\n".join(f"  • {cd['country']}: {', '.join(cd.get('days_to_close', ['all days']))}" for cd in cd_list)
+        return (
+            f"📋 *Confirmation required*\n\n"
+            f"Action: reopen days\n"
+            f"Brokers: `{brokers}`\n"
+            f"Countries & days:\n{lines}\n\n"
+            f"Confirm?"
+        )
+
     if a == "add_revenue":
         brokers = ", ".join(str(b) for b in action.get("broker_ids", []))
         cr_list = action.get("country_revenues", [])
@@ -5571,10 +5724,20 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                 t_country = task.get("country", "")
                 t_day = task.get("day", "")
 
+                # Для LATAM маршрутизации — определяем country_hint из всех источников
+                country_hint = t_country
+                if not country_hint:
+                    # Fallback: funnel_countries, broker_country_cache
+                    fc = task.get("funnel_countries", [])
+                    if fc:
+                        country_hint = fc[0]
+                    elif t_broker in broker_country_cache:
+                        country_hint = broker_country_cache[t_broker]
+
                 # Получаем base_path из кэша или ищем один раз
                 if t_broker not in broker_base_cache:
                     _page = await get_page()
-                    _bp = await find_and_open_broker(_page, t_broker, country_hint=t_country)
+                    _bp = await find_and_open_broker(_page, t_broker, country_hint=country_hint)
                     broker_base_cache[t_broker] = _bp
                     if _bp:
                         log.info(f"Cached base_path for '{t_broker}': {_bp}")
@@ -5981,6 +6144,39 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                     base_path=broker_base
                                 )
                                 sub_results.append(sub_msg)
+                        msg = "\n".join(sub_results)
+            elif a == "reopen_days":
+                countries_days = action.get("countries_days", [])
+                if not countries_days:
+                    countries = action.get("countries", [])
+                    country = countries[0] if countries and "all" not in countries else "all"
+                    days = action.get("days_to_close", [])
+                    if not days:
+                        days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+                    if country:
+                        countries_days = [{"country": country, "days_to_close": days}]
+
+                if not countries_days:
+                    msg = "❌ Please specify countries."
+                else:
+                    sub_results = []
+                    first_country = next((cd.get("country") for cd in countries_days if cd.get("country", "all").lower() != "all"), None)
+                    page = await get_page()
+                    broker_base = await find_and_open_broker(page, str(broker_id), country_hint=first_country)
+                    if not broker_base:
+                        msg = f"❌ Broker '{broker_id}' not found."
+                    else:
+                        for cd in countries_days:
+                            days_to_reopen = cd.get("days_to_close", [])
+                            if not days_to_reopen:
+                                days_to_reopen = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+                            sub_msg = await action_reopen_days(
+                                broker_id=str(broker_id),
+                                country=cd.get("country", "all"),
+                                days_to_reopen=days_to_reopen,
+                                base_path=broker_base
+                            )
+                            sub_results.append(sub_msg)
                         msg = "\n".join(sub_results)
             elif a == "add_revenue":
                 country_revenues = action.get("country_revenues", [])
@@ -6551,7 +6747,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         "pause", "back in", "is back", "inactive", "deactivate", "activate", "disable", "enable",
                         "put active", "put inactive", "bring back", "back to active", "active now", "is active",
                         "set active", "set inactive", "make active", "make inactive", "total",
-                        "source", "funnel", "map as", "map aff")
+                        "source", "funnel", "map as", "map aff", "reopen")
         # Числа с % (100%) или через / (21/117/28) — не прайсы
         text_no_slashed = re.sub(r'\d+(/\d+)+', '', text)  # убираем "21/117/28/13"
         msg_has_price = bool(re.search(r'\b[A-Z]{2}\b', text_upper_orig) and re.search(r'\b\d{3,4}\b(?!%)', text_no_slashed))
