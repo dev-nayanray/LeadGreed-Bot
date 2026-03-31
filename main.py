@@ -7381,7 +7381,7 @@ async def _fetch_all_leads_today() -> list:
     except Exception:
         pass
 
-    now = datetime.datetime.now()
+    now = datetime.datetime.utcnow() + datetime.timedelta(hours=3)  # GMT+3 for correct date
     from_dt = now.strftime("%Y-%m-%d 00:00:00")
     to_dt = now.strftime("%Y-%m-%d 23:59:59")
 
@@ -7602,8 +7602,8 @@ async def _report_loop(bot):
                 _save_tomorrow_rotations()  # очищаем файл завтрашних
                 log.info(f"Midnight swap: today_rotations now has {len(today_rotations)} entries")
 
-            # Проверка "started" — каждую минуту без ограничения по времени
-            if today_rotations:
+            # Проверка "started" — с 01:00 GMT+3 (буфер после midnight swap)
+            if today_rotations and local_hour >= 1:
                 unfired = [k for k in today_rotations if k not in fired_started]
                 if unfired:
                     all_leads = await _fetch_all_leads_today()
@@ -7653,7 +7653,7 @@ async def _report_loop(bot):
                             log.info(f"Started notification: {broker_name} {country_iso}")
 
             # Только с 08:00 до 20:00 и каждые 15 минут
-            if 10 <= local_hour < 20 and local_minute % 15 == 0:
+            if 10 <= local_hour < 20 and local_minute % 20 == 0:
                 report = await _build_report()
                 if report:
                     await bot.send_message(
