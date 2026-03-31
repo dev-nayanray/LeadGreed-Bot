@@ -437,6 +437,8 @@ SYSTEM_PROMPT = """
   • "2251 - Fugazi CH\n122 DE 1600 16%" → broker_id: "2251", country: "Germany", amount: 1600, affiliate_id: "122" (add_revenue)
   • "71\nBR 800" → affiliate_id: "71", country: "Brazil", amount: 800 (add_affiliate_revenue)
   • "159\nFR 1000\nES 1100" → affiliate_id: "159" (add_affiliate_revenue)
+  • "188 CI\n600 CPA" → affiliate_id: "188", country: "Côte d'Ivoire", amount: 600 (add_affiliate_revenue). "CPA" — тип сделки, игнорируем.
+  • "29 IT\n1450 15%" → affiliate_id: "29", country: "Italy", amount: 1450 (add_affiliate_revenue). "15%" — игнорируем.
   • "228 ID 650\n228 MY 1150" → affiliate_id: "228", country_revenues: [{"country": "Indonesia", "amount": 650}, {"country": "Malaysia", "amount": 1150}] (add_affiliate_revenue)
     ВАЖНО: здесь "ID" = Indonesia (ISO код), НЕ идентификатор! "228" = аффилиат, "ID" = страна, "650" = сумма.
   Одна сумма на несколько стран → country_revenues с одинаковым amount для каждой страны.
@@ -6751,6 +6753,22 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                     await asyncio.sleep(3)
 
 
+# Буфер для объединения последовательных сообщений от одного юзера
+_msg_buffer: dict = {}  # key: (chat_id, user_id) → {"texts": [...], "task": Task, "update": Update, "context": Context, "reply_context": str}
+_MSG_BUFFER_DELAY = 4  # секунд ожидания перед обработкой
+
+
+async def _flush_msg_buffer(chat_id: int, user_id: int):
+    """Обработать накопленные сообщения после задержки."""
+    buf_key = (chat_id, user_id)
+    buf = _msg_buffer.pop(buf_key, None)
+    if not buf or not buf["texts"]:
+        return
+    combined_text = "\n".join(buf["texts"])
+    log.info(f"Message buffer flushed: {len(buf['texts'])} messages combined for user {user_id}")
+    await _process_message(buf["update"], buf["context"], combined_text, buf["reply_context"])
+
+
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
@@ -6767,6 +6785,37 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_context = ""
     if update.message.reply_to_message and update.message.reply_to_message.text:
         reply_context = update.message.reply_to_message.text.strip()
+
+    # Добавляем в буфер
+    buf_key = (chat_id, user_id)
+    if buf_key in _msg_buffer:
+        # Отменяем предыдущий таймер
+        old_task = _msg_buffer[buf_key].get("task")
+        if old_task and not old_task.done():
+            old_task.cancel()
+        _msg_buffer[buf_key]["texts"].append(text)
+        _msg_buffer[buf_key]["update"] = update  # последний update для reply
+        if reply_context:
+            _msg_buffer[buf_key]["reply_context"] = reply_context
+    else:
+        _msg_buffer[buf_key] = {
+            "texts": [text],
+            "update": update,
+            "context": context,
+            "reply_context": reply_context,
+        }
+
+    # Планируем обработку через 4 секунды
+    async def delayed_flush():
+        await asyncio.sleep(_MSG_BUFFER_DELAY)
+        await _flush_msg_buffer(chat_id, user_id)
+
+    _msg_buffer[buf_key]["task"] = asyncio.create_task(delayed_flush())
+
+
+async def _process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, reply_context: str = ""):
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
 
     # В групповых чатах — реагируем только на сообщения, похожие на CRM-команды
     # В личке — обрабатываем всё
