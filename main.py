@@ -7266,9 +7266,9 @@ def _country_iso(country: str) -> str:
 
 # Алиасы стран — для поиска в CRM (AI может вернуть одно название, а в CRM другое)
 _COUNTRY_ALIASES = {
-    "ivory coast": "Cote",
-    "côte d'ivoire": "Cote",
-    "cote d'ivoire": "Cote",
+    "ivory coast": "Ivoire",
+    "côte d'ivoire": "Ivoire",
+    "cote d'ivoire": "Ivoire",
     "south korea": "Korea",
     "czech republic": "Czech",
     "united arab emirates": "Emirates",
