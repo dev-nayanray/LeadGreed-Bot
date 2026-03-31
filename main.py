@@ -6229,6 +6229,7 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                         page = await get_page()
                         first_country = next((cr.get("country") for cr in country_revenues if cr.get("country", "all").lower() != "all"), None)
                         rev_broker_base = await find_and_open_broker(page, str(broker_id), country_hint=first_country)
+                        rev_broker_display = _last_broker_full_name  # сохраняем имя сразу
                         # Группируем страны по одинаковой сумме + affiliate_id
                         from collections import defaultdict
                         groups = defaultdict(list)
@@ -6256,6 +6257,8 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                                 )
                                 sub_results.append(sub_msg)
                         msg = "\n".join(sub_results)
+                        # Восстанавливаем display name для вывода
+                        _last_broker_full_name = rev_broker_display
             elif a == "add_affiliate_revenue":
                 aff_id = str(action.get("affiliate_id") or broker_id)
                 cr_list = action.get("country_revenues", [])
@@ -7742,16 +7745,12 @@ async def _report_loop(bot):
                             lead_aff = str(found_lead.get("affid", "?"))
                             time_str = (datetime.datetime.utcnow() + datetime.timedelta(hours=3)).strftime("%H:%M")
                             msg = f"▶️ *STARTED*\n{broker_name.replace('🟩', '').replace('🟢', '').strip()} {flag}{country_iso}"
-                            if aff_str:
-                                msg += f" (aff {aff_str})"
-                            # Если первый лид от аффа вне ротации — показываем
-                            if lead_aff not in info.get("affs", []):
-                                msg += f"\n⚠️ first lead from aff {lead_aff}"
                             msg += f" • {time_str}"
-                            # Email первого лида — уже нашли его
+                            # Email первого лида с указанием аффа
                             first_email = found_lead.get("email", "")
                             if first_email:
-                                msg += f"\n📧 {first_email}"
+                                aff_warn = " ⚠️" if lead_aff not in info.get("affs", []) else ""
+                                msg += f"\n📧 aff {lead_aff}{aff_warn} • {first_email}"
                             await bot.send_message(
                                 REPORT_CHAT_ID,
                                 msg,
