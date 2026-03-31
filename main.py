@@ -1749,7 +1749,7 @@ async def action_add_country_hours_multi(broker_id: str, country: str,
             search_input = await page.query_selector("input[id*='search-input'], input[id*='search']")
             if search_input:
                 await search_input.click(click_count=3)
-                await search_input.type(country, delay=50)
+                await search_input.type(_country_search_term(country), delay=50)
                 for _ in range(20):
                     await page.wait_for_timeout(200)
                     cnt = await page.evaluate("() => document.querySelectorAll('li.dropdown-item').length")
@@ -1924,7 +1924,7 @@ async def action_add_country_hours(broker_id: str, country: str, start: str, end
         if search_input:
             await search_input.click()
             await search_input.click(click_count=3)
-            await search_input.type(country, delay=50)
+            await search_input.type(_country_search_term(country), delay=50)
             # Ждём пока список отфильтруется (не 100 элементов)
             for _ in range(20):
                 await page.wait_for_timeout(200)
@@ -2528,7 +2528,7 @@ async def action_add_affiliate_revenue(affiliate_id: str, country: str, amount: 
 
         if search_input:
             await search_input.click(click_count=3)
-            await search_input.type(country, delay=50)
+            await search_input.type(_country_search_term(country), delay=50)
             for _ in range(20):
                 await page.wait_for_timeout(200)
                 cnt = await page.evaluate("() => document.querySelectorAll('li.dropdown-item, .dropdown-item').length")
@@ -2721,7 +2721,7 @@ async def action_add_affiliate_revenue_grouped(affiliate_id: str, countries: lis
 
             await search_input.click()
             await page.wait_for_timeout(100)
-            await search_input.type(country, delay=60)
+            await search_input.type(_country_search_term(country), delay=60)
             await page.wait_for_timeout(400)
 
             for _ in range(15):
@@ -2924,7 +2924,7 @@ async def action_add_revenue_grouped(broker_id: str, countries: list, amount: st
             # Вводим страну через type() — надёжно триггерит Vue
             await search_input.click()
             await page.wait_for_timeout(100)
-            await search_input.type(country, delay=60)
+            await search_input.type(_country_search_term(country), delay=60)
             await page.wait_for_timeout(400)
 
             # Ждём фильтрации
@@ -3155,7 +3155,7 @@ async def action_add_revenue(broker_id: str, country: str, amount: str, affiliat
 
         if search_input:
             await search_input.click(click_count=3)
-            await search_input.type(country, delay=50)
+            await search_input.type(_country_search_term(country), delay=50)
             # Ждём пока список отфильтруется
             for _ in range(20):
                 await page.wait_for_timeout(200)
@@ -3989,10 +3989,10 @@ async def action_add_funnel_slug_override(broker_id: str, override_codes: list,
                     inp_el = await page.query_selector(f"#{search_inp}")
                     if inp_el:
                         await inp_el.click()
-                        await inp_el.type(country, delay=60)
+                        await inp_el.type(_country_search_term(country), delay=60)
                         log.info(f"Typed country via Playwright: {country}")
                 else:
-                    await page.keyboard.type(country, delay=60)
+                    await page.keyboard.type(_country_search_term(country), delay=60)
                 await page.wait_for_timeout(700)
 
                 # Кликаем через JS
@@ -4656,7 +4656,7 @@ async def action_change_caps(broker_id: str, country: str, cap_value: int = 0, d
 
                 if search_input:
                     await search_input.click(click_count=3)
-                    await search_input.fill(country)
+                    await search_input.fill(_country_search_term(country))
                     await search_input.evaluate(
                         "el => { el.dispatchEvent(new Event('input',{bubbles:true})); "
                         "el.dispatchEvent(new Event('change',{bubbles:true})); }"
@@ -4672,7 +4672,7 @@ async def action_change_caps(broker_id: str, country: str, cap_value: int = 0, d
                     log.info(f"Typed: {country}")
                 else:
                     log.warning("Search input not found — keyboard fallback")
-                    await page.keyboard.type(country, delay=60)
+                    await page.keyboard.type(_country_search_term(country), delay=60)
                     await page.wait_for_timeout(600)
 
                 # Кликаем по стране в списке (ul#country-8or-list)
@@ -7266,20 +7266,29 @@ def _country_iso(country: str) -> str:
 
 # Алиасы стран — для поиска в CRM (AI может вернуть одно название, а в CRM другое)
 _COUNTRY_ALIASES = {
-    "ivory coast": "Ivoire",
-    "côte d'ivoire": "Ivoire",
-    "cote d'ivoire": "Ivoire",
-    "south korea": "Korea",
-    "czech republic": "Czech",
-    "united arab emirates": "Emirates",
+    "ivory coast": "Côte d'Ivoire",
+    "côte d'ivoire": "Côte d'Ivoire",
+    "cote d'ivoire": "Côte d'Ivoire",
+    "south korea": "Korea, Republic of",
+    "czech republic": "Czech Republic",
+    "united arab emirates": "United Arab Emirates",
     "united kingdom": "United Kingdom",
     "united states": "United States",
 }
 
 
 def _normalize_country_for_crm(country: str) -> str:
-    """Нормализовать название страны для поиска в CRM дропдаунах."""
+    """Нормализовать название страны — вернуть правильное полное имя."""
     return _COUNTRY_ALIASES.get(country.lower(), country)
+
+
+def _country_search_term(country: str) -> str:
+    """Вернуть поисковый термин для CRM дропдауна (без акцентов)."""
+    import unicodedata
+    # Убираем акценты: Côte → Cote
+    nfkd = unicodedata.normalize('NFKD', country)
+    stripped = ''.join(c for c in nfkd if not unicodedata.combining(c))
+    return stripped
 
 
 def _extract_broker_id(broker_name: str) -> int:
@@ -7617,7 +7626,7 @@ async def _build_report() -> str:
     time_str = now.strftime("%H:%M")
     lines = [f"📊 *Stats {time_str}*\n"]
 
-    for broker_name, info in today_rotations.items():
+    for broker_name, info in sorted(today_rotations.items(), key=lambda x: _country_iso(x[1].get("country", ""))):
         country = info.get("country", "")
         rotation_affs = info.get("affs", [])
         rotation_broker_id = _extract_broker_id(broker_name)
