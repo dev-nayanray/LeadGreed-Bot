@@ -597,6 +597,10 @@ Capitan, Legion, Fintrix CRG, Swin FR CRG, Swin FR CRG duplicate, Swin EN CRG, S
 - Строки с именем брокера + "N cap" + "HH:MM-HH:MM" — поставить капу и часы
 - Если перед именем брокера указан числовой ID (например "2251 - Fugazi CH - CRG"), используй ID: broker_id: "2251"
 - "cap total" или просто "cap" без "aff" — капа БЕЗ affiliate_id
+- ВАЖНО: если в сообщении указаны капы для НЕСКОЛЬКИХ брокеров — каждый получает СВОЮ капу. Не путай!
+  Пример: "Legion 10 and Kalipso 20" → Legion cap=10, Kalipso cap=20. НЕ наоборот!
+  Пример: "keep total caps Legion 10 and Kalipso 20" → Legion cap=10, Kalipso cap=20
+  Число ПЕРЕД или СРАЗУ ПОСЛЕ имени брокера — это капа ЭТОГО брокера.
 - Строка "PAUSED" или "паузд" после имени брокера — ЗАКРЫТЬ часы этого брокера на указанный день
 - Строки с "funnel", "map", "keep", "sharing", "dif", "rotation", "what's the rotation", "whats the rotation" — ИГНОРИРУЙ, это не CRM-команды. "rotation" = распределение лидов, НЕ часы.
 - gmt+N — конвертируй время в GMT+3
@@ -940,12 +944,13 @@ async def do_login():
     alog.set_status("last_login", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 
-async def find_and_open_broker(page: Page, broker_id: str, country_hint: str = None) -> Optional[str]:
+async def find_and_open_broker(page: Page, broker_id: str, country_hint: str = None, type_hint: str = None) -> Optional[str]:
     """Wrapper с кэшированием результата."""
     import time
-    # Кэш-ключ включает LATAM-признак чтобы Axia и Axia Latam кэшировались отдельно
+    # Кэш-ключ включает LATAM-признак и тип интеграции
     is_latam_hint = country_hint and country_hint.lower() in LATAM_COUNTRIES
-    cache_key = str(broker_id).strip().lower() + ("_latam" if is_latam_hint else "")
+    type_suffix = f"_{type_hint.lower()}" if type_hint else ""
+    cache_key = str(broker_id).strip().lower() + ("_latam" if is_latam_hint else "") + type_suffix
     if cache_key in _broker_path_cache:
         cached_path, cached_time, cached_name = _broker_path_cache[cache_key]
         if time.time() - cached_time < _BROKER_CACHE_TTL:
@@ -954,7 +959,7 @@ async def find_and_open_broker(page: Page, broker_id: str, country_hint: str = N
             if cached_name:
                 _last_broker_full_name = cached_name
             return cached_path
-    result = await _find_and_open_broker_impl(page, broker_id, country_hint)
+    result = await _find_and_open_broker_impl(page, broker_id, country_hint, type_hint)
     if result:
         _cache_broker_path(cache_key, result, _last_broker_full_name)
     # Strip green square emoji from display name
@@ -963,11 +968,12 @@ async def find_and_open_broker(page: Page, broker_id: str, country_hint: str = N
     return result
 
 
-async def _find_and_open_broker_impl(page: Page, broker_id: str, country_hint: str = None) -> Optional[str]:
+async def _find_and_open_broker_impl(page: Page, broker_id: str, country_hint: str = None, type_hint: str = None) -> Optional[str]:
     """
     Найти брокера и вернуть его base path (/clients/ID).
     Возвращает None если брокер not found.
     country_hint — название страны, для LATAM-маршрутизации.
+    type_hint — тип интеграции (CRG/CPA), для выбора правильной интеграции.
     """
     import time
     global _last_broker_full_name
@@ -978,7 +984,9 @@ async def _find_and_open_broker_impl(page: Page, broker_id: str, country_hint: s
     is_latam = False
     if country_hint and country_hint.lower() in LATAM_COUNTRIES:
         is_latam = True
-    log.info(f"find_and_open_broker: broker_id='{broker_id}', country_hint='{country_hint}', is_latam={is_latam}")
+    # Определяем предпочтительный тип интеграции
+    prefer_type = (type_hint or "").lower() if type_hint else None
+    log.info(f"find_and_open_broker: broker_id='{broker_id}', country_hint='{country_hint}', is_latam={is_latam}, type_hint={prefer_type}")
 
     # Если ID числовой — ищем через поиск (чтобы получить полное имя)
     # Если не найдём — fallback на прямой переход
@@ -1194,6 +1202,20 @@ async def _find_and_open_broker_impl(page: Page, broker_id: str, country_hint: s
             if cpa:
                 best = min(cpa, key=lambda r: len(r["name"]))
                 log.info(f"Selected CPA by query: {best['name']}")
+                _last_broker_full_name = best["name"]
+                return best["href"].replace("/settings", "")
+        # type_hint из контекста (CRG/CPA) — предпочитаем этот тип
+        if prefer_type and prefer_type in ("crg", "cpa"):
+            typed = [r for r in partial if prefer_type in r["name"].lower()]
+            active_typed = [r for r in typed if r.get("status") == "active"]
+            if active_typed:
+                best = min(active_typed, key=lambda r: len(r["name"]))
+                log.info(f"Preferred {prefer_type.upper()} by type_hint: {best['name']}")
+                _last_broker_full_name = best["name"]
+                return best["href"].replace("/settings", "")
+            elif typed:
+                best = min(typed, key=lambda r: len(r["name"]))
+                log.info(f"Selected {prefer_type.upper()} by type_hint (inactive): {best['name']}")
                 _last_broker_full_name = best["name"]
                 return best["href"].replace("/settings", "")
         # Иначе предпочитаем CPA (но только если есть active CPA)
@@ -5736,23 +5758,37 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                 # Для LATAM маршрутизации — определяем country_hint из всех источников
                 country_hint = t_country
                 if not country_hint:
-                    # Fallback: funnel_countries, broker_country_cache
                     fc = task.get("funnel_countries", [])
                     if fc:
                         country_hint = fc[0]
                     elif t_broker in broker_country_cache:
                         country_hint = broker_country_cache[t_broker]
 
+                # CRG/CPA маршрутизация — из broker_id или из команды
+                type_hint = None
+                if "crg" in t_broker.lower():
+                    type_hint = "crg"
+                elif "cpa" in t_broker.lower():
+                    type_hint = "cpa"
+                elif user_cmd:
+                    # Извлекаем тип из первой строки команды (DE CRG today)
+                    first_line = user_cmd.split("\n")[0].upper()
+                    if " CRG " in f" {first_line} " or first_line.endswith(" CRG"):
+                        type_hint = "crg"
+                    elif " CPA " in f" {first_line} " or first_line.endswith(" CPA"):
+                        type_hint = "cpa"
+
                 # Получаем base_path из кэша или ищем один раз
-                if t_broker not in broker_base_cache:
+                cache_key_broker = f"{t_broker}_{type_hint or ''}"
+                if cache_key_broker not in broker_base_cache:
                     _page = await get_page()
-                    _bp = await find_and_open_broker(_page, t_broker, country_hint=country_hint)
-                    broker_base_cache[t_broker] = _bp
+                    _bp = await find_and_open_broker(_page, t_broker, country_hint=country_hint, type_hint=type_hint)
+                    broker_base_cache[cache_key_broker] = _bp
                     if _bp:
-                        log.info(f"Cached base_path for '{t_broker}': {_bp}")
+                        log.info(f"Cached base_path for '{t_broker}' (type={type_hint}): {_bp}")
                     else:
                         log.warning(f"Broker '{t_broker}' not found — skipping tasks for it")
-                t_base_path = broker_base_cache.get(t_broker)
+                t_base_path = broker_base_cache.get(cache_key_broker)
 
                 lid = alog.log_action(f"multi_{t_type}", t_broker, f"{t_country} {t_day}",
                                       "pending", user_command=user_cmd)
