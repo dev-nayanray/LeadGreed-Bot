@@ -460,7 +460,8 @@ SYSTEM_PROMPT = """
 
 Правила разбора:
 - ISO код страны → переводи в полное название
-- ВАЖНО: В формате прайс-листа (строки вида `КОД ЧИСЛО`) любой 2-буквенный токен — это ВСЕГДА ISO код страны, даже если он совпадает со словами "ID", "IN", "IS", "NO", "IT", "TO" и т.д. Никогда не интерпретируй его как идентификатор или служебное слово. Примеры: "ID 1250" → {country: "Indonesia", amount: 1250}, "IN 900" → {country: "India", amount: 900}
+- ВАЖНО: CI = Côte d'Ivoire (НЕ Chile! Chile = CL). CL = Chile, CI = Côte d'Ivoire (Ivory Coast).
+- ВАЖНО: В формате прайс-листа (строки вида `КОД ЧИСЛО`) любой 2-буквенный токен — это ВСЕГДА ISO код страны, даже если он совпадает со словами "ID", "IN", "IS", "NO", "IT", "TO" и т.д. Никогда не интерпретируй его как идентификатор или служебное слово. Примеры: "ID 1250" → {country: "Indonesia", amount: 1250}, "IN 900" → {country: "India", amount: 900}, "CI 800" → {country: "Côte d'Ivoire", amount: 800}
 - Число (целое, без %) → сумма прайса (amount). Берём ПЕРВОЕ большое число (обычно 3-4 цифры) как amount.
 - $ — игнорируй
 - cpa / crg / тип сделки — игнорируй
@@ -6872,6 +6873,35 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     action = await asyncio.get_event_loop().run_in_executor(None, parse_command, text)
 
+    # Нормализация названий стран для CRM (Ivory Coast → Cote, и т.д.)
+    def _normalize_countries_in_action(act):
+        for key in ("countries", "funnel_countries"):
+            if key in act and isinstance(act[key], list):
+                act[key] = [_normalize_country_for_crm(c) for c in act[key]]
+        if act.get("country"):
+            act["country"] = _normalize_country_for_crm(act["country"])
+        for cr in act.get("country_revenues", []):
+            if cr.get("country"):
+                cr["country"] = _normalize_country_for_crm(cr["country"])
+        for cc in act.get("country_caps", []):
+            if cc.get("country"):
+                cc["country"] = _normalize_country_for_crm(cc["country"])
+        for ch in act.get("country_hours", []):
+            if ch.get("country"):
+                ch["country"] = _normalize_country_for_crm(ch["country"])
+        for cd in act.get("countries_days", []):
+            if cd.get("country"):
+                cd["country"] = _normalize_country_for_crm(cd["country"])
+    _normalize_countries_in_action(action)
+    # Нормализуем страны в multi_broker_task подзадачах
+    for task in action.get("tasks", []):
+        if task.get("country"):
+            task["country"] = _normalize_country_for_crm(task["country"])
+        for fc in (task.get("funnel_countries") or []):
+            pass  # funnel_countries is list of strings, normalize below
+        if task.get("funnel_countries"):
+            task["funnel_countries"] = [_normalize_country_for_crm(c) for c in task["funnel_countries"]]
+
     # Для add_affiliate_revenue broker_ids может быть пустым — используем affiliate_id
     if action.get("action") == "add_affiliate_revenue" and action.get("affiliate_id") and not action.get("broker_ids"):
         action["broker_ids"] = [str(action["affiliate_id"])]
@@ -7142,6 +7172,8 @@ _COUNTRY_ISO = {
     "paraguay": "PY", "uruguay": "UY", "costa rica": "CR", "panama": "PA",
     "dominican republic": "DO", "guatemala": "GT", "honduras": "HN",
     "el salvador": "SV", "nicaragua": "NI", "cuba": "CU", "trinidad and tobago": "TT",
+    "ivory coast": "CI", "côte d'ivoire": "CI", "cote d'ivoire": "CI",
+    "nigeria": "NG", "ghana": "GH", "kenya": "KE",
 }
 
 # Флаги стран по ISO коду или полному названию
@@ -7181,6 +7213,24 @@ def _country_flag(country: str) -> str:
 def _country_iso(country: str) -> str:
     """Вернуть ISO код страны."""
     return _COUNTRY_ISO.get(country.lower(), country[:2].upper())
+
+
+# Алиасы стран — для поиска в CRM (AI может вернуть одно название, а в CRM другое)
+_COUNTRY_ALIASES = {
+    "ivory coast": "Cote",
+    "côte d'ivoire": "Cote",
+    "cote d'ivoire": "Cote",
+    "south korea": "Korea",
+    "czech republic": "Czech",
+    "united arab emirates": "Emirates",
+    "united kingdom": "United Kingdom",
+    "united states": "United States",
+}
+
+
+def _normalize_country_for_crm(country: str) -> str:
+    """Нормализовать название страны для поиска в CRM дропдаунах."""
+    return _COUNTRY_ALIASES.get(country.lower(), country)
 
 
 def _extract_broker_id(broker_name: str) -> int:
