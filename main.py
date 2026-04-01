@@ -6602,6 +6602,43 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
 
                     msg = "\n".join(sub_results)
 
+                    # Сохраняем ротацию для отчётов (как в multi_broker_task)
+                    broker_display = _last_broker_full_name if _last_broker_full_name != str(broker_id) else str(broker_id)
+                    country_for_rot = ""
+                    cap_for_rot = None
+                    # Берём страну из country_hours или country_caps
+                    if country_hours_list:
+                        country_for_rot = country_hours_list[0].get("country", "")
+                    elif cc_list:
+                        country_for_rot = cc_list[0].get("country", "")
+                    if cc_list:
+                        cap_for_rot = cc_list[0].get("cap")
+                    if country_for_rot:
+                        import datetime as _dt
+                        day_names = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
+                        tomorrow_name = day_names[(_dt.datetime.now().weekday() + 1) % 7]
+                        requested_day = action.get("requested_day", "")
+                        is_tomorrow = requested_day.lower() == tomorrow_name.lower() if requested_day else False
+                        entry = {"affs": [], "country": country_for_rot}
+                        if cap_for_rot:
+                            entry["cap"] = cap_for_rot
+                        if is_tomorrow:
+                            if broker_display in tomorrow_rotations:
+                                existing = tomorrow_rotations[broker_display]
+                                if not entry.get("cap") and existing.get("cap"):
+                                    entry["cap"] = existing["cap"]
+                            tomorrow_rotations[broker_display] = entry
+                            _save_tomorrow_rotations()
+                            log.info(f"lead_task: Rotation saved to tomorrow: {broker_display} / {country_for_rot} / cap {entry.get('cap', '-')}")
+                        else:
+                            if broker_display in today_rotations:
+                                existing = today_rotations[broker_display]
+                                if not entry.get("cap") and existing.get("cap"):
+                                    entry["cap"] = existing["cap"]
+                            today_rotations[broker_display] = entry
+                            _save_rotations()
+                            log.info(f"lead_task: Rotation saved to today: {broker_display} / {country_for_rot} / cap {entry.get('cap', '-')}")
+
             elif a == "bulk_schedule":
                 # Оптимизированное расписание: открываем страницу ОДИН раз,
                 # для каждой страны — карандаш → модалка → часы + close → save
