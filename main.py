@@ -7997,7 +7997,7 @@ def _split_message(text: str, max_len: int = 4000) -> list:
 
 async def _check_conversion_alerts(bot):
     """Проверка всего CPA трафика за 7 дней с порогами по странам.
-    Поток: аффы → страны каждого аффа → брокеры в каждой стране → алерт если 0 FTD."""
+    Группирует все проблемные брокеры для одного аффа+страны в одно сообщение."""
     log.info("Running CPA conversion check...")
 
     now = datetime.datetime.now()
@@ -8033,7 +8033,7 @@ async def _check_conversion_alerts(bot):
     # 3) Для каждого CPA аффа — узнаём его страны
     for aff in cpa_affs:
         aff_id = aff.get("id")
-        aff_name = aff.get("name", f"Aff {aff_id}")
+        aff_name = (aff.get("name", "") or f"Aff {aff_id}").replace('\U0001f7e9', '').strip()
         aff_id_str = str(aff_id)
 
         try:
@@ -8048,7 +8048,7 @@ async def _check_conversion_alerts(bot):
         if not aff_countries:
             continue
 
-        # 4) Для каждой страны с >= 5 лидов — проверяем брокеров
+        # 4) Для каждой страны — собираем проблемных брокеров
         for country_rec in aff_countries:
             country_name = country_rec.get("name", "")
             country_leads = country_rec.get("total_leads", 0)
@@ -8057,7 +8057,7 @@ async def _check_conversion_alerts(bot):
 
             threshold = _get_conv_threshold(country_name)
             if country_leads < threshold:
-                continue  # даже суммарно не дотягивает — пропускаем запрос
+                continue
 
             try:
                 brokers_7d = await _fetch_stats_filtered(
@@ -8069,10 +8069,11 @@ async def _check_conversion_alerts(bot):
                 log.warning(f"Conv check: brokers error aff {aff_id} {country_name}: {e}")
                 continue
 
-            # 5) Проверяем каждого брокера (пропускаем CRG)
+            # Собираем проблемных брокеров для этой пары aff+country
+            bad_brokers = []
             for b in brokers_7d:
                 broker_id = b.get("id")
-                broker_name = b.get("name", f"Broker {broker_id}")
+                broker_name = (b.get("name", "") or f"Broker {broker_id}").replace('\U0001f7e9', '').replace('\U0001f7e2', '').strip()
                 if "crg" in broker_name.lower():
                     continue
                 leads_7d = b.get("total_leads", 0)
@@ -8086,98 +8087,100 @@ async def _check_conversion_alerts(bot):
                     continue
 
                 _fired_no_conv.add(alert_key)
-                _save_rotations()
-                flag = _country_flag(country_name)
-                country_iso = _country_iso(country_name)
-                log.info(f"No-conv alert: {broker_name} + aff {aff_id_str} + {country_iso} — {leads_7d}/{threshold} leads (7d), 0 FTD")
+                bad_brokers.append((broker_name, leads_7d))
 
-                # Каскадный поиск рекомендации
-                recommendation = ""
-                try:
-                    candidates = []
+            if not bad_brokers:
+                continue
 
-                    # a) Этот афф + это гео — текущий год
-                    yearly = await _fetch_stats_filtered(
-                        "brokers", narrow_affiliate=aff_id,
-                        narrow_country=country_name,
+            _save_rotations()
+            flag = _country_flag(country_name)
+            country_iso = _country_iso(country_name)
+
+            # Рекомендации — один запрос на aff+country
+            rec_text = ""
+            try:
+                candidates = []
+
+                yearly = await _fetch_stats_filtered(
+                    "brokers", narrow_affiliate=aff_id,
+                    narrow_country=country_name,
+                    from_date=year_start, to_date=today_str,
+                )
+                bad_ids = {b.get("id") for b in brokers_7d if any(bn == (b.get("name", "").replace('\U0001f7e9', '').strip()) for bn, _ in bad_brokers)}
+                candidates = [
+                    c for c in yearly
+                    if c.get("total_ftds", 0) > 0
+                    and c.get("total_leads", 0) >= 10
+                    and "crg" not in (c.get("name", "") or "").lower()
+                ]
+
+                if not candidates:
+                    geo_yr = await _fetch_stats_filtered(
+                        "brokers", narrow_country=country_name,
                         from_date=year_start, to_date=today_str,
                     )
                     candidates = [
-                        c for c in yearly
+                        c for c in geo_yr
                         if c.get("total_ftds", 0) > 0
                         and c.get("total_leads", 0) >= 10
-                        and c.get("id") != broker_id
                         and "crg" not in (c.get("name", "") or "").lower()
                     ]
 
-                    # b) Все аффы + это гео — текущий год
-                    if not candidates:
-                        geo_yr = await _fetch_stats_filtered(
-                            "brokers", narrow_country=country_name,
-                            from_date=year_start, to_date=today_str,
-                        )
-                        candidates = [
-                            c for c in geo_yr
-                            if c.get("total_ftds", 0) > 0
-                            and c.get("total_leads", 0) >= 10
-                            and c.get("id") != broker_id
-                            and "crg" not in (c.get("name", "") or "").lower()
-                        ]
+                if not candidates:
+                    prev_year = str(now.year - 1)
+                    geo_prev = await _fetch_stats_filtered(
+                        "brokers", narrow_country=country_name,
+                        from_date=f"{prev_year}-01-01", to_date=f"{prev_year}-12-31",
+                    )
+                    candidates = [
+                        c for c in geo_prev
+                        if c.get("total_ftds", 0) > 0
+                        and c.get("total_leads", 0) >= 10
+                        and "crg" not in (c.get("name", "") or "").lower()
+                    ]
 
-                    # c) Все аффы + это гео — прошлый год
-                    if not candidates:
-                        prev_year = str(now.year - 1)
-                        geo_prev = await _fetch_stats_filtered(
-                            "brokers", narrow_country=country_name,
-                            from_date=f"{prev_year}-01-01", to_date=f"{prev_year}-12-31",
-                        )
-                        candidates = [
-                            c for c in geo_prev
-                            if c.get("total_ftds", 0) > 0
-                            and c.get("total_leads", 0) >= 10
-                            and c.get("id") != broker_id
-                            and "crg" not in (c.get("name", "") or "").lower()
-                        ]
+                candidates.sort(key=lambda x: x.get("conversion_ratio", 0), reverse=True)
 
-                    candidates.sort(key=lambda x: x.get("conversion_ratio", 0), reverse=True)
+                if candidates:
+                    rec_parts = []
+                    for c in candidates[:6]:
+                        c_name = (c.get("name", "?") or "?").replace('\U0001f7e9', '').strip()
+                        c_cr = c.get("conversion_ratio", 0)
+                        c_cr_pct = f"{c_cr * 100:.1f}%" if c_cr and c_cr < 1 else "0%"
+                        c_ftds = c.get("total_ftds", 0)
+                        rec_parts.append(f"  {c_name}: {c_cr_pct} ({c_ftds} ftd)")
+                    rec_text = "\n\nBrokers with conversions:\n" + "\n".join(rec_parts)
 
-                    if candidates:
-                        rec_lines = [f"\n\n\U0001f4a1 *Brokers with conversions for {flag}{country_iso}:*"]
-                        for c in candidates[:8]:
-                            c_name = c.get("name", "?").replace('\U0001f7e9', '').strip()
-                            c_cr = c.get("conversion_ratio", 0)
-                            c_cr_pct = f"{c_cr * 100:.1f}%" if c_cr < 1 else f"{c_cr:.1f}%"
-                            c_leads = c.get("total_leads", 0)
-                            c_ftds = c.get("total_ftds", 0)
-                            rec_lines.append(f"\u2022 {c_name}: CR {c_cr_pct} ({c_leads}\u2192{c_ftds})")
-                        recommendation = "\n".join(rec_lines)
-                    else:
-                        recommendation = f"\n\n\u2753 No brokers with conversions found for {flag}{country_iso}."
+            except Exception as e:
+                log.warning(f"Conv alert recommendation error: {e}")
 
-                except Exception as e:
-                    log.warning(f"Conv alert recommendation error: {e}")
+            # Формируем ОДНО сообщение для аффа+страны
+            bad_lines = []
+            for bname, bleads in bad_brokers:
+                bad_lines.append(f"  {bname}: {bleads} leads, 0 FTD")
 
-                broker_clean = broker_name.replace('\U0001f7e9', '').replace('\U0001f7e2', '').strip()
+            msg = (
+                f"\u26a0\ufe0f NO CONVERSION — {flag}{country_name}\n"
+                f"Affiliate: {aff_name}\n"
+                f"Threshold: {threshold} leads (7 days)\n\n"
+                f"Problem brokers:\n"
+                + "\n".join(bad_lines)
+                + rec_text
+            )
 
-                msg = (
-                    f"\u26a0\ufe0f *NO CONVERSION ALERT*\n\n"
-                    f"Broker: *{broker_clean}*\n"
-                    f"Affiliate: *{aff_name}*\n"
-                    f"Country: {flag} {country_name}\n"
-                    f"Last 7 days: *{leads_7d} leads \u2192 0 FTDs* (threshold: {threshold})"
-                    f"{recommendation}"
-                )
+            log.info(f"Conv alert: aff {aff_id_str} + {country_iso} — {len(bad_brokers)} bad brokers")
 
-                try:
+            try:
+                # Отправляем без Markdown чтобы избежать parse errors
+                for chunk in _split_message(msg, 4000):
                     await bot.send_message(
                         REPORT_CHAT_ID,
-                        msg,
-                        parse_mode="Markdown",
+                        chunk,
                         disable_notification=True
                     )
-                    alerts_sent += 1
-                except Exception as e:
-                    log.warning(f"Conv alert send error: {e}")
+                alerts_sent += 1
+            except Exception as e:
+                log.warning(f"Conv alert send error: {e}")
 
     log.info(f"CPA conversion check done: {alerts_sent} alerts sent")
 
