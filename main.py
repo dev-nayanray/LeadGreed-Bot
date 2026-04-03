@@ -59,6 +59,9 @@ tomorrow_rotations: dict = {}
 # Ротации для которых уже отправили "started" уведомление
 fired_started: set = set()
 
+# Аффы-дельфины 🐬
+DOLPHIN_AFFS = {"100", "107", "125", "127", "144", "145", "200", "201", "202", "203", "204", "205", "206", "207", "208", "209", "219", "41", "42", "53", "55", "62", "70", "72", "88"}
+
 # Последнее найденное полное имя брокера (заполняется в find_and_open_broker)
 _last_broker_full_name: str = ""
 
@@ -7796,7 +7799,8 @@ async def _build_report() -> str:
             ftd = aff_ftd.get(aff_id, 0)
             warn = " ⚠️" if count == 0 else ""
             ftd_str = f" ({ftd} ftd)" if ftd > 0 else ""
-            lines.append(f"    {aff_id} — {count}{ftd_str}{warn}")
+            dolphin = " 🐬" if aff_id in DOLPHIN_AFFS else ""
+            lines.append(f"    {aff_id}{dolphin} — {count}{ftd_str}{warn}")
             shown.add(aff_id)
 
         # Потом остальные аффы — если есть лиды
@@ -7804,7 +7808,8 @@ async def _build_report() -> str:
             if aff_id not in shown and count > 0:
                 ftd = aff_ftd.get(aff_id, 0)
                 ftd_str = f" ({ftd} ftd)" if ftd > 0 else ""
-                lines.append(f"    {aff_id} — {count}{ftd_str}")
+                dolphin = " 🐬" if aff_id in DOLPHIN_AFFS else ""
+                lines.append(f"    {aff_id}{dolphin} — {count}{ftd_str}")
                 shown.add(aff_id)
 
         lines.append("")
@@ -7892,7 +7897,8 @@ async def _build_daily_summary() -> str:
             # Аффы — сортируем по лидам
             for aff_id, data in sorted(affs.items(), key=lambda x: -x[1]["leads"]):
                 ftd_str = f" ({data['ftd']} ftd)" if data["ftd"] > 0 else ""
-                lines.append(f"    {aff_id} — {data['leads']}{ftd_str}")
+                dolphin = " 🐬" if aff_id in DOLPHIN_AFFS else ""
+                lines.append(f"    {aff_id}{dolphin} — {data['leads']}{ftd_str}")
 
         lines.append("")
 
