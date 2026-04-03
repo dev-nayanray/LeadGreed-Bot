@@ -3069,6 +3069,7 @@ async def action_add_revenue(broker_id: str, country: str, amount: str, affiliat
     # Проверяем — есть ли уже запись для этой страны
     existing_pencil = None
     old_amount = None
+    existing_params = ""
     if country.lower() != "all":
         try:
             await page.wait_for_selector("table tr td", timeout=8000)
@@ -3099,7 +3100,13 @@ async def action_add_revenue(broker_id: str, country: str, amount: str, affiliat
                     old_amount = (await amount_td.inner_text()).strip().replace("$", "").strip()
                 existing_pencil = await row.query_selector("button.btn-outline-primary, a.btn-primary, button.btn-primary:not(.btn-danger)")
                 if existing_pencil:
-                    log.info(f"Entry for {country} already exists (${old_amount}, params={has_params}) — editing")
+                    # Читаем параметры (affiliate) если есть
+                    params_text = await row.evaluate("""el => {
+                        const params = el.querySelector('[class*="param"], [class*="badge"]');
+                        return params ? params.innerText.trim() : '';
+                    }""")
+                    existing_params = params_text or ""
+                    log.info(f"Entry for {country} already exists (${old_amount}, params={has_params}, details={existing_params}) — editing")
                     break
                 else:
                     log.info(f"Found {country} row (${old_amount}) but no pencil button")
@@ -3143,9 +3150,18 @@ async def action_add_revenue(broker_id: str, country: str, amount: str, affiliat
             await save_btn.click()
             await page.wait_for_timeout(1000)
             country_label = country if country.lower() != "all" else "all countries"
+            aff_label = ""
+            if existing_params:
+                # Извлекаем ID аффилиата из текста типа "1 parameter Affiliate 122 - Diamond"
+                import re as _re
+                aff_match = _re.search(r'(\d+)\s*-\s*', existing_params)
+                if aff_match:
+                    aff_label = f" (Affiliate {aff_match.group(1)})"
+                else:
+                    aff_label = f" (has parameters)"
             if old_amount:
-                return f"{country_label}: ${old_amount} → ${amount}"
-            return f"Price updated for {country_label}: ${amount}"
+                return f"{country_label}: ${old_amount} → ${amount}{aff_label}"
+            return f"Price updated for {country_label}: ${amount}{aff_label}"
         except Exception:
             await _close_modal(page)
             return "⚠️ Save button not found."
