@@ -8035,9 +8035,8 @@ async def _check_broker_errors(bot):
                             critical_errors.append(f"  ❗ {broker_name}: No valid campaigns")
                         elif "No linkRows available" in raw:
                             critical_errors.append(f"  ❗ {broker_name}: No linkRows available")
-                        elif cat == "distribution_closed":
-                            response_text = s.get("raw_response", "") or str(raw)
-                            critical_errors.append(f"  ❗ Distribution closed: {response_text[:50]}")
+                        elif "No matching campaign" in raw:
+                            critical_errors.append(f"  ❗ {broker_name}: No matching campaign")
 
                     if critical_errors:
                         country = lead.get("country", "?")
