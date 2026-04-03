@@ -8017,11 +8017,27 @@ async def _check_broker_errors(bot):
                     critical_errors = []
                     for s in statuses:
                         raw = s.get("raw_response", "")
+                        cat = s.get("category", "")
                         broker_name = s.get("broker_name", "Unknown")
                         if "Offer not found" in raw:
                             critical_errors.append(f"  ❗ {broker_name}: Offer not found")
                         elif "No active advertiser found" in raw:
                             critical_errors.append(f"  ❗ {broker_name}: No active advertiser found")
+                        elif "No hubs available" in raw:
+                            critical_errors.append(f"  ❗ {broker_name}: No hubs available")
+                        elif "API disabled" in raw:
+                            critical_errors.append(f"  ❗ {broker_name}: API disabled")
+                        elif "Limits are exhausted" in raw:
+                            critical_errors.append(f"  ❗ {broker_name}: Limits exhausted")
+                        elif "Unrecognized error" in raw:
+                            critical_errors.append(f"  ❗ {broker_name}: Unrecognized error")
+                        elif "No valid campaigns" in raw:
+                            critical_errors.append(f"  ❗ {broker_name}: No valid campaigns")
+                        elif "No linkRows available" in raw:
+                            critical_errors.append(f"  ❗ {broker_name}: No linkRows available")
+                        elif cat == "distribution_closed":
+                            response_text = s.get("raw_response", "") or str(raw)
+                            critical_errors.append(f"  ❗ Distribution closed: {response_text[:50]}")
 
                     if critical_errors:
                         country = lead.get("country", "?")
