@@ -7892,7 +7892,10 @@ async def _build_daily_summary() -> str:
             if b_ftd > 0:
                 pct = round(b_ftd / b_leads * 100, 1) if b_leads else 0
                 conv_str = f" ({b_ftd} ftd, {pct}%)"
-            lines.append(f"  {broker_name}: {b_leads}{conv_str}")
+            # Убираем числовой ID из имени брокера (3402 - Legion → Legion)
+            import re as _re
+            clean_broker = _re.sub(r'^\d+\s*-\s*', '', broker_name).strip()
+            lines.append(f"  {clean_broker}: {b_leads}{conv_str}")
 
             # Аффы — сортируем по лидам
             for aff_id, data in sorted(affs.items(), key=lambda x: -x[1]["leads"]):
