@@ -7285,7 +7285,7 @@ async def _fetch_stats_filtered(group_by: str = "brokers", months_back: int = 0,
         "split_rooms": True,
         "weekendTraffic": "all",
         "working_hours": "all",
-        "narrowDownAffiliate": narrow_affiliate,
+        "narrowDownAffiliate": None,
         "narrowDownCountry": None,
         "narrowDownBroker": None,
         "aggregateFields": [
@@ -7307,7 +7307,9 @@ async def _fetch_stats_filtered(group_by: str = "brokers", months_back: int = 0,
         ],
     }
 
-    # Фильтр по стране через ISO код (как CRM делает в UI)
+    # Фильтры как в CRM UI: массивы с ID/ISO
+    if narrow_affiliate:
+        payload["affiliates"] = [narrow_affiliate]
     if narrow_country:
         iso = _country_iso(narrow_country)
         payload["countries"] = [iso]
