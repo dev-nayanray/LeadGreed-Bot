@@ -7190,6 +7190,9 @@ async def on_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text("⏳ Building daily summary...", disable_notification=True)
     try:
+        # Убедимся что браузер инициализирован
+        if not _context:
+            await get_page()
         summary = await _build_daily_summary()
         if summary:
             for chunk in _split_message(summary, 4000):
