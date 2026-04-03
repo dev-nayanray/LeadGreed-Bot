@@ -8160,7 +8160,7 @@ async def _report_loop(bot):
                 await asyncio.sleep(60)
 
             # Проверка ошибок брокеров каждые 5 минут (10:00-20:00)
-            if 10 <= local_hour < 20 and local_minute % 5 == 0:
+            if 1 <= local_hour < 22 and local_minute % 5 == 0:
                 await _check_broker_errors(bot)
 
             # Ежедневный итоговый отчёт в 08:00 GMT+3 за вчера
