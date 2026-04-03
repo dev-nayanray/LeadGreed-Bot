@@ -7286,7 +7286,7 @@ async def _fetch_stats_filtered(group_by: str = "brokers", months_back: int = 0,
         "weekendTraffic": "all",
         "working_hours": "all",
         "narrowDownAffiliate": narrow_affiliate,
-        "narrowDownCountry": narrow_country,
+        "narrowDownCountry": None,
         "narrowDownBroker": None,
         "aggregateFields": [
             {"key": "id", "show": True},
@@ -7306,6 +7306,11 @@ async def _fetch_stats_filtered(group_by: str = "brokers", months_back: int = 0,
             {"key": "AeCPL", "show": True},
         ],
     }
+
+    # Фильтр по стране через ISO код (как CRM делает в UI)
+    if narrow_country:
+        iso = _country_iso(narrow_country)
+        payload["countries"] = [iso]
 
     try:
         payload_json = json.dumps(payload)
