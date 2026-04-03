@@ -7184,6 +7184,23 @@ async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def on_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /summary — ежедневный отчёт по запросу."""
+    if update.effective_user.id not in ALLOWED_USERS:
+        return
+    await update.message.reply_text("⏳ Building daily summary...", disable_notification=True)
+    try:
+        summary = await _build_daily_summary()
+        if summary:
+            for chunk in _split_message(summary, 4000):
+                await update.message.reply_text(chunk, parse_mode="Markdown", disable_notification=True)
+        else:
+            await update.message.reply_text("No leads found for today.", disable_notification=True)
+    except Exception as e:
+        log.warning(f"/summary error: {e}")
+        await update.message.reply_text(f"❌ Error: {e}", disable_notification=True)
+
+
 # ══════════════════════════════════════════
 #  ОЧИСТКА РЕСУРСОВ
 # ══════════════════════════════════════════
@@ -7987,6 +8004,7 @@ async def _report_loop(bot):
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(_post_init).build()
     app.add_handler(CommandHandler("start", on_start))
+    app.add_handler(CommandHandler("summary", on_summary))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
     app.add_handler(CallbackQueryHandler(on_callback))
 
