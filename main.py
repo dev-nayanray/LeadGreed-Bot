@@ -7337,6 +7337,7 @@ _COUNTRY_ISO = {
     "nigeria": "NG", "kenya": "KE", "ghana": "GH", "india": "IN",
     "indonesia": "ID", "malaysia": "MY", "singapore": "SG", "thailand": "TH",
     "vietnam": "VN", "philippines": "PH", "japan": "JP", "south korea": "KR",
+    "taiwan": "TW", "hong kong": "HK", "china": "CN",
     "new zealand": "NZ", "new caledonia": "NC", "guadeloupe": "GP", "martinique": "MQ",
     "french polynesia": "PF", "réunion": "RE", "reunion": "RE", "mayotte": "YT",
     "ukraine": "UA", "russia": "RU", "kazakhstan": "KZ",
@@ -7898,10 +7899,13 @@ async def _build_daily_summary(target_date=None) -> str:
             if b_ftd > 0:
                 pct = round(b_ftd / b_leads * 100, 1) if b_leads else 0
                 conv_str = f" ({b_ftd} ftd, {pct}%)"
-            # Убираем числовой ID из имени брокера (3402 - Legion → Legion)
+            # Убираем числовой ID и эмодзи из имени брокера
             import re as _re
             clean_broker = _re.sub(r'^\d+\s*-\s*', '', broker_name).strip()
-            lines.append(f"  {escape_md(clean_broker)}: {b_leads}{conv_str}")
+            clean_broker = clean_broker.replace('🟩', '').replace('🟢', '').strip()
+            # Индикатор: ❗ если нет FTD и больше 10 лидов
+            indicator = "❗" if b_ftd == 0 and b_leads > 10 else ""
+            lines.append(f"  {indicator}{escape_md(clean_broker)}: {b_leads}{conv_str}")
 
             # Аффы — сортируем по лидам
             for aff_id, data in sorted(affs.items(), key=lambda x: -x[1]["leads"]):
