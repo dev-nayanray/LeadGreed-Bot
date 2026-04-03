@@ -7604,7 +7604,7 @@ async def _fetch_all_leads_today() -> list:
         "test_leads": "exclude",
         "trafficType": "all",
         "page": 1,
-        "per_page": 1000,
+        "per_page": 2000,
         "breakdowns": [],
         "ord": [{"field": "id", "direction": "asc"}],
         "filter": {"isGlobalSearch": False, "globalSearchValues": [], "search": "", "searchType": "single", "searchBy": "email", "converted": "all", "successful": "all", "queued": "all"},
@@ -7792,6 +7792,87 @@ async def _build_report() -> str:
     return "\n".join(lines).strip()
 
 
+def _split_message(text: str, max_len: int = 4000) -> list:
+    """Разбить длинное сообщение на части по границе строк."""
+    if len(text) <= max_len:
+        return [text]
+    parts = []
+    current = ""
+    for line in text.split("\n"):
+        if len(current) + len(line) + 1 > max_len:
+            if current:
+                parts.append(current.strip())
+            current = line + "\n"
+        else:
+            current += line + "\n"
+    if current.strip():
+        parts.append(current.strip())
+    return parts
+
+
+async def _build_daily_summary() -> str:
+    """Построить итоговый ежедневный отчёт по ВСЕМУ трафику за день."""
+    all_leads = await _fetch_all_leads_today()
+    if not all_leads:
+        return ""
+
+    log.info(f"_build_daily_summary: {len(all_leads)} leads")
+
+    # Группируем: country → broker → {aff → {leads, ftd}}
+    from collections import defaultdict
+    country_data = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: {"leads": 0, "ftd": 0})))
+
+    for lead in all_leads:
+        c = lead.get("country") or "Unknown"
+        broker = lead.get("broker_name") or "Unknown"
+        aff = str(lead.get("affid") or "?")
+        is_ftd = lead.get("first_time_deposit") is not None
+
+        country_data[c][broker][aff]["leads"] += 1
+        if is_ftd:
+            country_data[c][broker][aff]["ftd"] += 1
+
+    now = datetime.datetime.utcnow() + datetime.timedelta(hours=3)
+    lines = [f"📊 *Daily Summary {now.strftime('%d.%m.%Y')}*\n"]
+
+    # Сортируем по ISO коду страны
+    for country in sorted(country_data.keys(), key=lambda c: _country_iso(c)):
+        flag = _country_flag(country)
+        iso = _country_iso(country)
+        brokers = country_data[country]
+
+        country_leads = sum(
+            sum(a["leads"] for a in affs.values())
+            for affs in brokers.values()
+        )
+        country_ftd = sum(
+            sum(a["ftd"] for a in affs.values())
+            for affs in brokers.values()
+        )
+
+        lines.append(f"{flag} *{iso}* ({country_leads} leads{f', {country_ftd} ftd' if country_ftd else ''})")
+
+        # Сортируем брокеров по количеству лидов (больше → выше)
+        for broker_name, affs in sorted(brokers.items(), key=lambda x: -sum(a["leads"] for a in x[1].values())):
+            b_leads = sum(a["leads"] for a in affs.values())
+            b_ftd = sum(a["ftd"] for a in affs.values())
+
+            conv_str = ""
+            if b_ftd > 0:
+                pct = round(b_ftd / b_leads * 100, 1) if b_leads else 0
+                conv_str = f" ({b_ftd} ftd, {pct}%)"
+            lines.append(f"  {broker_name}: {b_leads}{conv_str}")
+
+            # Аффы — сортируем по лидам
+            for aff_id, data in sorted(affs.items(), key=lambda x: -x[1]["leads"]):
+                ftd_str = f" ({data['ftd']} ftd)" if data["ftd"] > 0 else ""
+                lines.append(f"    {aff_id} — {data['leads']}{ftd_str}")
+
+        lines.append("")
+
+    return "\n".join(lines).strip()
+
+
 async def _report_loop(bot):
     """Фоновый цикл отправки отчётов каждые 5 минут с 08:00 до 20:00 GMT+3."""
     log.info("Report loop started.")
@@ -7871,7 +7952,7 @@ async def _report_loop(bot):
                             )
                             log.info(f"Started notification: {broker_name} {country_iso}")
 
-            # Только с 08:00 до 20:00 и каждые 15 минут
+            # Только с 10:00 до 20:00 и каждые 20 минут
             if 10 <= local_hour < 20 and local_minute % 20 == 0:
                 report = await _build_report()
                 if report:
@@ -7882,6 +7963,21 @@ async def _report_loop(bot):
                         disable_notification=True
                     )
                     log.info(f"Report sent to {REPORT_CHAT_ID}")
+                await asyncio.sleep(60)
+
+            # Ежедневный итоговый отчёт в 23:00 GMT+3
+            if local_hour == 23 and local_minute == 0:
+                summary = await _build_daily_summary()
+                if summary:
+                    # Telegram лимит 4096 символов — разбиваем если нужно
+                    for chunk in _split_message(summary, 4000):
+                        await bot.send_message(
+                            REPORT_CHAT_ID,
+                            chunk,
+                            parse_mode="Markdown",
+                            disable_notification=True
+                        )
+                    log.info(f"Daily summary sent to {REPORT_CHAT_ID}")
                 await asyncio.sleep(60)
         except Exception as e:
             log.warning(f"Report loop error: {e}")
