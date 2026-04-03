@@ -59,8 +59,39 @@ tomorrow_rotations: dict = {}
 # Ротации для которых уже отправили "started" уведомление
 fired_started: set = set()
 
+# Алерты о нулевой конверсии — ключ: "broker_name|aff_id", сбрасывается в midnight
+_fired_no_conv: set = set()
+
+# Пороги лидов без FTD для алерта (зависят от страны)
+_NO_CONV_DEFAULT = 20
+_NO_CONV_HIGH = {"indonesia": 250}  # гео с высоким порогом
+_NO_CONV_MEDIUM_COUNTRIES = {"india"}  # + LATAM_COUNTRIES (добавляется ниже)
+_NO_CONV_MEDIUM = 50
+_NO_CONV_INDIA = 100
+
+def _get_conv_threshold(country: str) -> int:
+    """Получить порог лидов без FTD для страны."""
+    c = country.lower() if country else ""
+    # Indonesia: 250
+    for key, val in _NO_CONV_HIGH.items():
+        if key in c or c in key:
+            return val
+    # India: 100
+    if "india" in c or c in "india":
+        return _NO_CONV_INDIA
+    # LATAM: 50
+    if c in LATAM_COUNTRIES:
+        return _NO_CONV_MEDIUM
+    for latam in LATAM_COUNTRIES:
+        if latam in c or c in latam:
+            return _NO_CONV_MEDIUM
+    return _NO_CONV_DEFAULT
+
 # Аффы-дельфины 🐬
 DOLPHIN_AFFS = {"100", "107", "125", "127", "144", "145", "200", "201", "202", "203", "204", "205", "206", "207", "208", "209", "219", "41", "42", "53", "55", "62", "70", "72", "88"}
+
+# CRG аффы — исключаем из CPA конверсионных проверок
+CRG_AFFS = {"17", "33", "35", "47", "51", "64", "71", "80", "123", "134", "137", "165", "168", "171", "175", "191", "211", "222", "225", "231"}
 
 # Последнее найденное полное имя брокера (заполняется в find_and_open_broker)
 _last_broker_full_name: str = ""
@@ -7207,138 +7238,123 @@ async def on_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Error: {e}", disable_notification=True)
 
 
-async def on_sniff(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /sniff — перехватить payloads запросов к /api/stats при клике по табам."""
+async def _fetch_stats_filtered(group_by: str = "brokers", months_back: int = 0,
+                                 narrow_affiliate: int = None, narrow_country: str = None,
+                                 from_date: str = None, to_date: str = None) -> list:
+    """Запросить статистику с фильтрами narrowDown.
+    from_date/to_date: "YYYY-MM-DD" — если указаны, используются вместо months_back.
+    """
+    if not _page:
+        return []
+
+    now = datetime.datetime.now()
+    if from_date and to_date:
+        from_dt = f"{from_date} 00:00:00"
+        to_dt = f"{to_date} 23:59:59"
+    elif months_back > 0:
+        month = now.month - months_back
+        year = now.year
+        while month < 1:
+            month += 12
+            year -= 1
+        first_day = now.replace(year=year, month=month, day=1)
+        if month == 12:
+            last_day = now.replace(year=year + 1, month=1, day=1) - datetime.timedelta(days=1)
+        else:
+            last_day = now.replace(year=year, month=month + 1, day=1) - datetime.timedelta(days=1)
+        from_dt = first_day.strftime("%Y-%m-%d 00:00:00")
+        to_dt = last_day.strftime("%Y-%m-%d 23:59:59")
+    else:
+        from_dt = now.replace(day=1).strftime("%Y-%m-%d 00:00:00")
+        to_dt = now.strftime("%Y-%m-%d 23:59:59")
+
+    payload = {
+        "successfullLeadsOnly": False,
+        "hideDuplicateFailedLeads": False,
+        "from_datetime": from_dt,
+        "to_datetime": to_dt,
+        "timezone": "Europe/Istanbul",
+        "group_by": group_by,
+        "breakdowns": [group_by],
+        "from_page": "stats",
+        "breakdown_request": True,
+        "test_leads": "exclude",
+        "trafficType": "all",
+        "insideHoursOnly": False,
+        "createdInsideDateRangeOnly": False,
+        "split_rooms": True,
+        "weekendTraffic": "all",
+        "working_hours": "all",
+        "narrowDownAffiliate": narrow_affiliate,
+        "narrowDownCountry": narrow_country,
+        "narrowDownBroker": None,
+        "aggregateFields": [
+            {"key": "id", "show": True},
+            {"key": "name", "show": True},
+            {"key": "total_leads", "show": True},
+            {"key": "successful_leads", "show": True},
+            {"key": "total_ftds", "show": True},
+            {"key": "affiliate_ftds", "show": True},
+            {"key": "late_total_ftds", "show": True},
+            {"key": "conversion_ratio", "show": True},
+            {"key": "aff_conversion_ratio", "show": True},
+            {"key": "cost", "show": True},
+            {"key": "revenue", "show": True},
+            {"key": "profit", "show": True},
+            {"key": "margin", "show": True},
+            {"key": "eCPL", "show": True},
+            {"key": "AeCPL", "show": True},
+        ],
+    }
+
+    try:
+        payload_json = json.dumps(payload)
+        result = await _page.evaluate(f"""async () => {{
+            try {{
+                const xsrf = document.cookie.split('; ').find(r => r.startsWith('XSRF-TOKEN='))?.split('=')[1];
+                const decodedXsrf = xsrf ? decodeURIComponent(xsrf) : '';
+                const resp = await fetch('/api/stats', {{
+                    method: 'POST',
+                    headers: {{
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'X-XSRF-TOKEN': decodedXsrf
+                    }},
+                    body: {json.dumps(payload_json)}
+                }});
+                if (!resp.ok) return null;
+                return await resp.json();
+            }} catch(e) {{ return null; }}
+        }}""")
+
+        if result and isinstance(result, (list, dict)):
+            data = result if isinstance(result, list) else result.get("data", [])
+            aff_tag = f", aff={narrow_affiliate}" if narrow_affiliate else ""
+            country_tag = f", country={narrow_country}" if narrow_country else ""
+            log.info(f"Stats filtered ({group_by}{aff_tag}{country_tag}): {len(data)} records")
+            return data
+    except Exception as e:
+        log.warning(f"Stats filtered error: {e}")
+    return []
+
+
+async def on_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /analyze — ручной запуск проверки CPA конверсий."""
     if update.effective_user.id not in ALLOWED_USERS:
         return
 
-    await update.message.reply_text("🔍 Sniffing /api/stats payloads... navigating to analytics page", disable_notification=True)
+    await update.message.reply_text(
+        "\U0001f4ca Running CPA conversion scan (7 days, excl. dolphins)...\nAlerts will appear in the notifications chat.",
+        disable_notification=True
+    )
 
     try:
         page = await get_page()
-        await page.goto(f"{CRM_URL}/stats/analytics", wait_until="domcontentloaded", timeout=30000)
-        await page.wait_for_timeout(3000)
-
-        # Monkey-patch fetch чтобы записывать все POST к /api/stats
-        await page.evaluate("""() => {
-            window.__captured_payloads = [];
-            const origFetch = window.fetch;
-            window.fetch = async function(...args) {
-                const [url, opts] = args;
-                if (opts && opts.method === 'POST' && typeof url === 'string' && url.includes('/api/stats')) {
-                    try {
-                        const body = typeof opts.body === 'string' ? JSON.parse(opts.body) : opts.body;
-                        window.__captured_payloads.push({
-                            url: url,
-                            timestamp: new Date().toISOString(),
-                            payload: body
-                        });
-                    } catch(e) {
-                        window.__captured_payloads.push({url: url, raw_body: opts.body, error: e.message});
-                    }
-                }
-                return origFetch.apply(this, args);
-            };
-        }""")
-
-        # Находим все табы на странице аналитики
-        tabs_info = await page.evaluate("""() => {
-            const tabs = document.querySelectorAll('.nav-link, [role="tab"], .tab-item, a[data-toggle="tab"], button[data-toggle="tab"]');
-            return Array.from(tabs).map(t => ({
-                text: t.innerText.trim(),
-                tag: t.tagName,
-                classes: t.className
-            }));
-        }""")
-
-        await update.message.reply_text(
-            f"📋 Found tabs: {json.dumps(tabs_info, indent=2)[:3000]}",
-            disable_notification=True
-        )
-
-        # Кликаем на каждый таб и ждём запроса
-        for tab_text in ["Brokers", "Affiliates", "Countries"]:
-            clicked = await page.evaluate(f"""() => {{
-                const tabs = document.querySelectorAll('.nav-link, [role="tab"], .tab-item, a[data-toggle="tab"], button[data-toggle="tab"]');
-                for (const t of tabs) {{
-                    if (t.innerText.trim().toLowerCase().includes('{tab_text.lower()}')) {{
-                        t.click();
-                        return t.innerText.trim();
-                    }}
-                }}
-                return null;
-            }}""")
-            if clicked:
-                log.info(f"Sniff: clicked tab '{clicked}'")
-                await page.wait_for_timeout(3000)
-
-        # Также попробуем кликнуть "This Month" в дэйт пикере
-        clicked_month = await page.evaluate("""() => {
-            // Ищем кнопки периодов (This Month, Today, Yesterday и т.д.)
-            const btns = document.querySelectorAll('button, .btn, [class*="range"], [class*="period"]');
-            for (const btn of btns) {
-                const txt = btn.innerText.trim().toLowerCase();
-                if (txt.includes('this month') || txt.includes('month')) {
-                    btn.click();
-                    return btn.innerText.trim();
-                }
-            }
-            // Ещё попробуем li элементы в дэйт-рэнж пикерах
-            const lis = document.querySelectorAll('li[data-range-key], .ranges li');
-            for (const li of lis) {
-                const txt = li.innerText.trim().toLowerCase();
-                if (txt.includes('this month') || txt === 'month') {
-                    li.click();
-                    return li.innerText.trim();
-                }
-            }
-            return null;
-        }""")
-        if clicked_month:
-            log.info(f"Sniff: clicked date range '{clicked_month}'")
-            await page.wait_for_timeout(3000)
-
-        # После клика по "This Month" снова кликаем табы
-        for tab_text in ["Brokers"]:
-            await page.evaluate(f"""() => {{
-                const tabs = document.querySelectorAll('.nav-link, [role="tab"], .tab-item, a[data-toggle="tab"], button[data-toggle="tab"]');
-                for (const t of tabs) {{
-                    if (t.innerText.trim().toLowerCase().includes('{tab_text.lower()}')) {{
-                        t.click();
-                        return true;
-                    }}
-                }}
-                return false;
-            }}""")
-            await page.wait_for_timeout(3000)
-
-        # Забираем перехваченные payloads
-        captured = await page.evaluate("() => window.__captured_payloads || []")
-
-        # Восстанавливаем оригинальный fetch
-        await page.evaluate("""() => {
-            if (window.__origFetch) window.fetch = window.__origFetch;
-            delete window.__captured_payloads;
-        }""")
-
-        if not captured:
-            await update.message.reply_text("❌ No /api/stats requests captured. Try /sniff again.", disable_notification=True)
-            return
-
-        # Отправляем каждый payload как отдельное сообщение
-        for i, cap in enumerate(captured):
-            payload_str = json.dumps(cap.get("payload", cap), indent=2, ensure_ascii=False)
-            msg = f"📦 *Request {i+1}*\n`{cap.get('url', '?')}`\n```json\n{payload_str[:3500]}\n```"
-            await update.message.reply_text(msg, parse_mode="Markdown", disable_notification=True)
-
-        await update.message.reply_text(
-            f"✅ Captured {len(captured)} requests total. Copy the Brokers payload and send it to me.",
-            disable_notification=True
-        )
-
+        await _check_conversion_alerts(context.bot)
+        await update.message.reply_text("\u2705 CPA scan complete. Check notifications chat for alerts.", disable_notification=True)
     except Exception as e:
-        log.warning(f"/sniff error: {e}")
-        await update.message.reply_text(f"❌ Error: {e}", disable_notification=True)
+        log.warning(f"/analyze error: {e}")
+        await update.message.reply_text(f"\u274c Error: {e}", disable_notification=True)
 
 
 # ══════════════════════════════════════════
@@ -7406,6 +7422,8 @@ def _load_rotations():
                 today_rotations.update(data["rotations"])
                 fired_started.clear()
                 fired_started.update(data.get("fired_started", []))
+                _fired_no_conv.clear()
+                _fired_no_conv.update(data.get("fired_no_conv", []))
             else:
                 today_rotations.clear()
                 today_rotations.update(data)
@@ -7431,7 +7449,11 @@ def _save_rotations():
     path = "/root/auto-b2026/rotations_today.json"
     try:
         with open(path, "w") as f:
-            json.dump({"rotations": today_rotations, "fired_started": list(fired_started)}, f, ensure_ascii=False, indent=2)
+            json.dump({
+                "rotations": today_rotations,
+                "fired_started": list(fired_started),
+                "fired_no_conv": list(_fired_no_conv),
+            }, f, ensure_ascii=False, indent=2)
     except Exception as e:
         log.warning(f"Failed to save rotations: {e}")
 
@@ -7973,6 +7995,193 @@ def _split_message(text: str, max_len: int = 4000) -> list:
     return parts
 
 
+async def _check_conversion_alerts(bot):
+    """Проверка всего CPA трафика за 7 дней с порогами по странам.
+    Поток: аффы → страны каждого аффа → брокеры в каждой стране → алерт если 0 FTD."""
+    log.info("Running CPA conversion check...")
+
+    now = datetime.datetime.now()
+    today_str = now.strftime("%Y-%m-%d")
+    week_ago = (now - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
+    year_start = f"{now.year}-01-01"
+
+    # 1) Загружаем всех аффилиатов за 7 дней
+    try:
+        all_affs = await _fetch_stats_filtered(
+            "affiliates", from_date=week_ago, to_date=today_str,
+        )
+    except Exception as e:
+        log.warning(f"Conv check: failed to fetch affiliates: {e}")
+        return
+
+    if not all_affs:
+        log.info("Conv check: no affiliate data")
+        return
+
+    # 2) Фильтруем: убираем дельфинов и CRG аффов, берём с >= 5 лидов
+    cpa_affs = [
+        a for a in all_affs
+        if str(a.get("id", "")) not in DOLPHIN_AFFS
+        and str(a.get("id", "")) not in CRG_AFFS
+        and "crg" not in (a.get("name", "") or "").lower()
+        and a.get("total_leads", 0) >= 5
+    ]
+
+    log.info(f"Conv check: {len(cpa_affs)} CPA affiliates to scan")
+    alerts_sent = 0
+
+    # 3) Для каждого CPA аффа — узнаём его страны
+    for aff in cpa_affs:
+        aff_id = aff.get("id")
+        aff_name = aff.get("name", f"Aff {aff_id}")
+        aff_id_str = str(aff_id)
+
+        try:
+            aff_countries = await _fetch_stats_filtered(
+                "countries", narrow_affiliate=aff_id,
+                from_date=week_ago, to_date=today_str,
+            )
+        except Exception as e:
+            log.warning(f"Conv check: countries error for aff {aff_id}: {e}")
+            continue
+
+        if not aff_countries:
+            continue
+
+        # 4) Для каждой страны с >= 5 лидов — проверяем брокеров
+        for country_rec in aff_countries:
+            country_name = country_rec.get("name", "")
+            country_leads = country_rec.get("total_leads", 0)
+            if country_leads < 5 or not country_name:
+                continue
+
+            threshold = _get_conv_threshold(country_name)
+            if country_leads < threshold:
+                continue  # даже суммарно не дотягивает — пропускаем запрос
+
+            try:
+                brokers_7d = await _fetch_stats_filtered(
+                    "brokers", narrow_affiliate=aff_id,
+                    narrow_country=country_name,
+                    from_date=week_ago, to_date=today_str,
+                )
+            except Exception as e:
+                log.warning(f"Conv check: brokers error aff {aff_id} {country_name}: {e}")
+                continue
+
+            # 5) Проверяем каждого брокера (пропускаем CRG)
+            for b in brokers_7d:
+                broker_id = b.get("id")
+                broker_name = b.get("name", f"Broker {broker_id}")
+                if "crg" in broker_name.lower():
+                    continue
+                leads_7d = b.get("total_leads", 0)
+                ftds_7d = b.get("total_ftds", 0)
+
+                if ftds_7d > 0 or leads_7d < threshold:
+                    continue
+
+                alert_key = f"{broker_id}|{aff_id_str}|{country_name}"
+                if alert_key in _fired_no_conv:
+                    continue
+
+                _fired_no_conv.add(alert_key)
+                _save_rotations()
+                flag = _country_flag(country_name)
+                country_iso = _country_iso(country_name)
+                log.info(f"No-conv alert: {broker_name} + aff {aff_id_str} + {country_iso} — {leads_7d}/{threshold} leads (7d), 0 FTD")
+
+                # Каскадный поиск рекомендации
+                recommendation = ""
+                try:
+                    candidates = []
+
+                    # a) Этот афф + это гео — текущий год
+                    yearly = await _fetch_stats_filtered(
+                        "brokers", narrow_affiliate=aff_id,
+                        narrow_country=country_name,
+                        from_date=year_start, to_date=today_str,
+                    )
+                    candidates = [
+                        c for c in yearly
+                        if c.get("total_ftds", 0) > 0
+                        and c.get("total_leads", 0) >= 10
+                        and c.get("id") != broker_id
+                        and "crg" not in (c.get("name", "") or "").lower()
+                    ]
+
+                    # b) Все аффы + это гео — текущий год
+                    if not candidates:
+                        geo_yr = await _fetch_stats_filtered(
+                            "brokers", narrow_country=country_name,
+                            from_date=year_start, to_date=today_str,
+                        )
+                        candidates = [
+                            c for c in geo_yr
+                            if c.get("total_ftds", 0) > 0
+                            and c.get("total_leads", 0) >= 10
+                            and c.get("id") != broker_id
+                            and "crg" not in (c.get("name", "") or "").lower()
+                        ]
+
+                    # c) Все аффы + это гео — прошлый год
+                    if not candidates:
+                        prev_year = str(now.year - 1)
+                        geo_prev = await _fetch_stats_filtered(
+                            "brokers", narrow_country=country_name,
+                            from_date=f"{prev_year}-01-01", to_date=f"{prev_year}-12-31",
+                        )
+                        candidates = [
+                            c for c in geo_prev
+                            if c.get("total_ftds", 0) > 0
+                            and c.get("total_leads", 0) >= 10
+                            and c.get("id") != broker_id
+                            and "crg" not in (c.get("name", "") or "").lower()
+                        ]
+
+                    candidates.sort(key=lambda x: x.get("conversion_ratio", 0), reverse=True)
+
+                    if candidates:
+                        rec_lines = [f"\n\n\U0001f4a1 *Brokers with conversions for {flag}{country_iso}:*"]
+                        for c in candidates[:8]:
+                            c_name = c.get("name", "?").replace('\U0001f7e9', '').strip()
+                            c_cr = c.get("conversion_ratio", 0)
+                            c_cr_pct = f"{c_cr * 100:.1f}%" if c_cr < 1 else f"{c_cr:.1f}%"
+                            c_leads = c.get("total_leads", 0)
+                            c_ftds = c.get("total_ftds", 0)
+                            rec_lines.append(f"\u2022 {c_name}: CR {c_cr_pct} ({c_leads}\u2192{c_ftds})")
+                        recommendation = "\n".join(rec_lines)
+                    else:
+                        recommendation = f"\n\n\u2753 No brokers with conversions found for {flag}{country_iso}."
+
+                except Exception as e:
+                    log.warning(f"Conv alert recommendation error: {e}")
+
+                broker_clean = broker_name.replace('\U0001f7e9', '').replace('\U0001f7e2', '').strip()
+
+                msg = (
+                    f"\u26a0\ufe0f *NO CONVERSION ALERT*\n\n"
+                    f"Broker: *{broker_clean}*\n"
+                    f"Affiliate: *{aff_name}*\n"
+                    f"Country: {flag} {country_name}\n"
+                    f"Last 7 days: *{leads_7d} leads \u2192 0 FTDs* (threshold: {threshold})"
+                    f"{recommendation}"
+                )
+
+                try:
+                    await bot.send_message(
+                        REPORT_CHAT_ID,
+                        msg,
+                        parse_mode="Markdown",
+                        disable_notification=True
+                    )
+                    alerts_sent += 1
+                except Exception as e:
+                    log.warning(f"Conv alert send error: {e}")
+
+    log.info(f"CPA conversion check done: {alerts_sent} alerts sent")
+
+
 async def _build_daily_summary(target_date=None) -> str:
     """Построить итоговый ежедневный отчёт по ВСЕМУ трафику. Defaults to today GMT+3."""
     all_leads = await _fetch_all_leads_today(target_date)
@@ -8230,6 +8439,7 @@ async def _report_loop(bot):
                 today_rotations.update(tomorrow_rotations)
                 tomorrow_rotations.clear()
                 fired_started.clear()
+                _fired_no_conv.clear()
                 _save_rotations()
                 _save_tomorrow_rotations()  # очищаем файл завтрашних
                 log.info(f"Midnight swap: today_rotations now has {len(today_rotations)} entries")
@@ -8291,11 +8501,19 @@ async def _report_loop(bot):
                         disable_notification=True
                     )
                     log.info(f"Report sent to {REPORT_CHAT_ID}")
+
+                # Проверка конверсий — алерты если 0 FTD при N+ лидов
+                # (вынесена в отдельный часовой цикл ниже)
+
                 await asyncio.sleep(60)
 
             # Проверка ошибок брокеров каждые 5 минут (10:00-20:00)
             if 1 <= local_hour < 22 and local_minute % 5 == 0:
                 await _check_broker_errors(bot)
+
+            # Проверка конверсий CPA трафика — каждый час (10:00-20:00)
+            if 10 <= local_hour < 20 and local_minute == 30:
+                await _check_conversion_alerts(bot)
 
             # Ежедневный итоговый отчёт в 08:00 GMT+3 за вчера
             if local_hour == 8 and local_minute == 0:
@@ -8336,7 +8554,7 @@ def main():
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(_post_init).build()
     app.add_handler(CommandHandler("start", on_start))
     app.add_handler(CommandHandler("summary", on_summary))
-    app.add_handler(CommandHandler("sniff", on_sniff))
+    app.add_handler(CommandHandler("analyze", on_analyze))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
     app.add_handler(CallbackQueryHandler(on_callback))
 
