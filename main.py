@@ -7599,8 +7599,8 @@ async def _fetch_first_lead(broker_name: str, aff_ids: list, country: str) -> st
         return []
 
 
-async def _fetch_all_leads_today() -> list:
-    """Fetch all detailed leads for today via aiohttp (independent of page state)."""
+async def _fetch_all_leads_today(target_date=None) -> list:
+    """Fetch all detailed leads for a given date via aiohttp. Defaults to today GMT+3."""
     import aiohttp
     import urllib.parse
 
@@ -7616,9 +7616,10 @@ async def _fetch_all_leads_today() -> list:
     except Exception:
         pass
 
-    now = datetime.datetime.utcnow() + datetime.timedelta(hours=3)  # GMT+3 for correct date
-    from_dt = now.strftime("%Y-%m-%d 00:00:00")
-    to_dt = now.strftime("%Y-%m-%d 23:59:59")
+    if target_date is None:
+        target_date = (datetime.datetime.utcnow() + datetime.timedelta(hours=3)).date()
+    from_dt = f"{target_date} 00:00:00"
+    to_dt = f"{target_date} 23:59:59"
 
     payload = {
         "successfullLeadsOnly": False,
@@ -7837,13 +7838,15 @@ def _split_message(text: str, max_len: int = 4000) -> list:
     return parts
 
 
-async def _build_daily_summary() -> str:
-    """Построить итоговый ежедневный отчёт по ВСЕМУ трафику за день."""
-    all_leads = await _fetch_all_leads_today()
+async def _build_daily_summary(target_date=None) -> str:
+    """Построить итоговый ежедневный отчёт по ВСЕМУ трафику. Defaults to today GMT+3."""
+    all_leads = await _fetch_all_leads_today(target_date)
     if not all_leads:
         return ""
 
-    log.info(f"_build_daily_summary: {len(all_leads)} leads")
+    if target_date is None:
+        target_date = (datetime.datetime.utcnow() + datetime.timedelta(hours=3)).date()
+    log.info(f"_build_daily_summary: {len(all_leads)} leads for {target_date}")
 
     # Группируем: country → broker → {aff → {leads, ftd}}
     from collections import defaultdict
@@ -7863,7 +7866,8 @@ async def _build_daily_summary() -> str:
             country_data[c][broker][aff]["ftd"] += 1
 
     now = datetime.datetime.utcnow() + datetime.timedelta(hours=3)
-    lines = [f"📊 *Daily Summary {now.strftime('%d.%m.%Y')}*\n"]
+    date_str = target_date.strftime('%d.%m.%Y') if hasattr(target_date, 'strftime') else str(target_date)
+    lines = [f"📊 *Daily Summary {date_str}*\n"]
 
     # Сортируем по количеству лидов (больше → выше)
     def _country_total_leads(c):
@@ -8002,9 +8006,25 @@ async def _report_loop(bot):
                     log.info(f"Report sent to {REPORT_CHAT_ID}")
                 await asyncio.sleep(60)
 
-            # Ежедневный итоговый отчёт в 23:00 GMT+3
-            if local_hour == 23 and local_minute == 0:
-                summary = await _build_daily_summary()
+            # Ежедневный итоговый отчёт в 08:00 GMT+3 за вчера
+            if local_hour == 8 and local_minute == 0:
+                yesterday = (datetime.datetime.utcnow() + datetime.timedelta(hours=3) - datetime.timedelta(days=1)).date()
+                summary = await _build_daily_summary(yesterday)
+                if summary:
+                    for chunk in _split_message(summary, 4000):
+                        await bot.send_message(
+                            REPORT_CHAT_ID,
+                            chunk,
+                            parse_mode="Markdown",
+                            disable_notification=True
+                        )
+                    log.info(f"Daily summary (yesterday) sent to {REPORT_CHAT_ID}")
+                await asyncio.sleep(60)
+
+            # Ежедневный итоговый отчёт в 17:00 GMT+3 за сегодня
+            if local_hour == 17 and local_minute == 0:
+                today = (datetime.datetime.utcnow() + datetime.timedelta(hours=3)).date()
+                summary = await _build_daily_summary(today)
                 if summary:
                     # Telegram лимит 4096 символов — разбиваем если нужно
                     for chunk in _split_message(summary, 4000):
