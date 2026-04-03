@@ -7608,7 +7608,7 @@ async def _fetch_all_leads_today() -> list:
         "breakdowns": [],
         "ord": [{"field": "id", "direction": "asc"}],
         "filter": {"isGlobalSearch": False, "globalSearchValues": [], "search": "", "searchType": "single", "searchBy": "email", "converted": "all", "successful": "all", "queued": "all"},
-        "fields": ["affid", "country", "broker_name", "email", "broker_id"],
+        "fields": ["affid", "country", "broker_name", "email", "broker_id", "first_time_deposit"],
         "narrowDownAffiliate": None,
         "narrowDownCountry": None,
         "narrowDownBroker": None,
@@ -7720,9 +7720,9 @@ async def _build_report() -> str:
     # DEBUG: показываем формат данных для отладки
     if all_leads:
         sample = all_leads[0]
-        log.info(f"_build_report SAMPLE lead: country={sample.get('country')!r} broker_name={sample.get('broker_name')!r} broker_id={sample.get('broker_id')!r} affid={sample.get('affid')!r}")
+        log.info(f"_build_report SAMPLE lead: country={sample.get('country')!r} broker_id={sample.get('broker_id')!r} affid={sample.get('affid')!r} ftd={sample.get('first_time_deposit')!r}")
     for bname, binfo in today_rotations.items():
-        log.info(f"_build_report ROTATION: broker={bname!r} broker_id={_extract_broker_id(bname)} country={binfo.get('country')!r} affs={binfo.get('affs')!r}")
+        log.info(f"_build_report ROTATION: broker={bname!r} broker_id={_extract_broker_id(bname)} country={binfo.get('country')!r}")
 
     now = datetime.datetime.utcnow() + datetime.timedelta(hours=3)
     time_str = now.strftime("%H:%M")
@@ -7741,6 +7741,7 @@ async def _build_report() -> str:
 
         # Считаем ВСЕ лиды для broker+country, группируем по affid
         aff_counts = {}
+        aff_ftd = {}
         for lead in all_leads:
             # Проверяем страну
             lead_country = (lead.get("country") or "").lower()
@@ -7753,28 +7754,37 @@ async def _build_report() -> str:
             # Подходящий лид — считаем по affid
             aff_key = str(lead.get("affid", "?"))
             aff_counts[aff_key] = aff_counts.get(aff_key, 0) + 1
+            # FTD: first_time_deposit не null = конверсия
+            if lead.get("first_time_deposit"):
+                aff_ftd[aff_key] = aff_ftd.get(aff_key, 0) + 1
 
         total = sum(aff_counts.values())
+        total_ftd = sum(aff_ftd.values())
         cap = info.get("cap")
-        log.info(f"_build_report MATCH: broker={broker_name!r} country={country!r} → matched {total} leads, aff_counts={aff_counts}")
+        log.info(f"_build_report MATCH: broker={broker_name!r} country={country!r} → matched {total} leads, {total_ftd} ftd, aff_counts={aff_counts}")
         lines.append(f"{flag} *{country_iso}* — {broker_name.replace('🟩', '').replace('🟢', '').strip()}")
-        if cap:
-            lines.append(f"  Leads: {total}/{cap}")
+        leads_str = f"{total}/{cap}" if cap else f"{total}"
+        if total_ftd > 0:
+            lines.append(f"  Leads: {leads_str} | FTD: {total_ftd}")
         else:
-            lines.append(f"  Leads: {total}")
+            lines.append(f"  Leads: {leads_str}")
 
         # Сначала аффы из ротации
         shown = set()
         for aff_id in rotation_affs:
             count = aff_counts.get(aff_id, 0)
+            ftd = aff_ftd.get(aff_id, 0)
             warn = " ⚠️" if count == 0 else ""
-            lines.append(f"    {aff_id} — {count}{warn}")
+            ftd_str = f" ({ftd} ftd)" if ftd > 0 else ""
+            lines.append(f"    {aff_id} — {count}{ftd_str}{warn}")
             shown.add(aff_id)
 
         # Потом остальные аффы — если есть лиды
         for aff_id, count in sorted(aff_counts.items(), key=lambda x: -x[1]):
             if aff_id not in shown and count > 0:
-                lines.append(f"    {aff_id} — {count}")
+                ftd = aff_ftd.get(aff_id, 0)
+                ftd_str = f" ({ftd} ftd)" if ftd > 0 else ""
+                lines.append(f"    {aff_id} — {count}{ftd_str}")
                 shown.add(aff_id)
 
         lines.append("")
