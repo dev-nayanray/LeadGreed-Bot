@@ -3083,13 +3083,23 @@ async def action_add_revenue(broker_id: str, country: str, amount: str, affiliat
                 continue
             td_text = (await country_td.inner_text()).strip()
             if country.lower() in td_text.lower():
+                # Проверяем наличие affiliate параметра в строке
+                row_text = (await row.inner_text()).strip()
+                has_params = "parameter" in row_text.lower()
+
+                # Если affiliate не указан — ищем запись БЕЗ параметров
+                # Если affiliate указан — ищем любую (потом обновим)
+                if affiliate_id is None and has_params:
+                    log.info(f"Skipping {country} row with parameters (no affiliate specified)")
+                    continue
+
                 # Читаем текущую сумму (3-я колонка)
                 amount_td = await row.query_selector("td:nth-child(3)")
                 if amount_td:
                     old_amount = (await amount_td.inner_text()).strip().replace("$", "").strip()
                 existing_pencil = await row.query_selector("button.btn-outline-primary, a.btn-primary, button.btn-primary:not(.btn-danger)")
                 if existing_pencil:
-                    log.info(f"Entry for {country} already exists (${old_amount}) — editing")
+                    log.info(f"Entry for {country} already exists (${old_amount}, params={has_params}) — editing")
                     break
                 else:
                     log.info(f"Found {country} row (${old_amount}) but no pencil button")
@@ -7703,6 +7713,9 @@ async def _build_report() -> str:
     lines = [f"📊 *Stats {time_str}*\n"]
 
     for broker_name, info in sorted(today_rotations.items(), key=lambda x: _country_iso(x[1].get("country", ""))):
+        # Пропускаем ротации помеченные no_report (только для started)
+        if info.get("no_report"):
+            continue
         country = info.get("country", "")
         rotation_affs = info.get("affs", [])
         rotation_broker_id = _extract_broker_id(broker_name)
