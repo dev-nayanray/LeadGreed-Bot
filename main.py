@@ -7918,6 +7918,140 @@ async def _build_daily_summary(target_date=None) -> str:
     return "\n".join(lines).strip()
 
 
+# Множество lead_id для которых уже отправили алерт об ошибке
+_alerted_error_leads: set = set()
+
+
+async def _check_broker_errors(bot):
+    """Проверить последние лиды на ошибки брокеров (Offer not found, No brokers available и т.д.)."""
+    import aiohttp, urllib.parse
+
+    if not _context:
+        return
+
+    cookies_list = await _context.cookies()
+    cookies = {c["name"]: c["value"] for c in cookies_list}
+    xsrf = cookies.get("XSRF-TOKEN", "")
+    try:
+        xsrf = urllib.parse.unquote(xsrf)
+    except Exception:
+        pass
+
+    now = datetime.datetime.utcnow() + datetime.timedelta(hours=3)
+    from_dt = now.strftime("%Y-%m-%d 00:00:00")
+    to_dt = now.strftime("%Y-%m-%d 23:59:59")
+
+    # Берём последние 50 лидов (новейшие первые)
+    payload = {
+        "successfullLeadsOnly": False,
+        "hideDuplicateFailedLeads": False,
+        "from_datetime": from_dt,
+        "to_datetime": to_dt,
+        "timezone": "Europe/Istanbul",
+        "test_leads": "exclude",
+        "trafficType": "all",
+        "page": 1,
+        "per_page": 50,
+        "breakdowns": [],
+        "ord": [{"field": "id", "direction": "desc"}],
+        "filter": {"isGlobalSearch": False, "globalSearchValues": [], "search": "", "searchType": "single", "searchBy": "email", "converted": "all", "successful": "all", "queued": "all"},
+        "fields": ["affid", "country", "broker_name", "email", "broker_id"],
+        "narrowDownAffiliate": None,
+        "narrowDownCountry": None,
+        "narrowDownBroker": None,
+        "from_page": "stats",
+    }
+
+    headers = {
+        "Content-Type": "application/json;charset=utf-8",
+        "Accept": "application/json, text/plain, */*",
+        "X-XSRF-TOKEN": xsrf,
+        "Referer": f"{CRM_URL}/stats/details",
+        "Origin": CRM_URL,
+    }
+
+    try:
+        async with aiohttp.ClientSession(cookies=cookies) as session:
+            # Шаг 1: получаем последние лиды
+            async with session.post(
+                f"{CRM_URL}/api/stats",
+                json=payload,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=15),
+                ssl=False
+            ) as resp:
+                if resp.status != 200:
+                    return
+                data = await resp.json()
+                leads = data.get("data", []) if isinstance(data, dict) else data
+
+            # Шаг 2: находим лиды без брокера (заблокированные)
+            blocked = [l for l in leads if not l.get("broker_name") and l.get("id") not in _alerted_error_leads]
+            if not blocked:
+                return
+
+            log.info(f"Broker error check: {len(blocked)} blocked leads found")
+
+            # Шаг 3: проверяем broker_history для каждого (макс 15)
+            error_messages = []
+            for lead in blocked[:15]:
+                lead_id = lead.get("id")
+                if not lead_id:
+                    continue
+
+                try:
+                    async with session.get(
+                        f"{CRM_URL}/api/leads/broker_history/{lead_id}",
+                        headers={"Accept": "application/json", "X-XSRF-TOKEN": xsrf, "Referer": f"{CRM_URL}/stats/details"},
+                        timeout=aiohttp.ClientTimeout(total=10),
+                        ssl=False
+                    ) as hist_resp:
+                        if hist_resp.status != 200:
+                            continue
+                        hist = await hist_resp.json()
+
+                    statuses = hist.get("statuses", [])
+                    blockage = hist.get("blockage_reason", "")
+
+                    # Ищем критические ошибки
+                    critical_errors = []
+                    for s in statuses:
+                        raw = s.get("raw_response", "")
+                        broker_name = s.get("broker_name", "Unknown")
+                        if "Offer not found" in raw:
+                            critical_errors.append(f"  ❗ {broker_name}: Offer not found")
+                        elif "No active advertiser found" in raw:
+                            critical_errors.append(f"  ❗ {broker_name}: No active advertiser found")
+
+                    if critical_errors:
+                        country = lead.get("country", "?")
+                        email = lead.get("email", "?")
+                        aff = lead.get("affid", "?")
+                        msg = f"🚨 *Broker Error*\n{email} • {country} • aff {aff}"
+                        if critical_errors:
+                            msg += "\n" + "\n".join(critical_errors)
+                        error_messages.append(msg)
+                        _alerted_error_leads.add(lead_id)
+
+                except Exception as e:
+                    log.warning(f"Broker history check failed for {lead_id}: {e}")
+
+            # Отправляем алерты
+            for msg in error_messages:
+                try:
+                    await bot.send_message(
+                        REPORT_CHAT_ID,
+                        msg,
+                        parse_mode="Markdown",
+                        disable_notification=False
+                    )
+                except Exception:
+                    pass
+
+    except Exception as e:
+        log.warning(f"Broker error check failed: {e}")
+
+
 async def _report_loop(bot):
     """Фоновый цикл отправки отчётов каждые 5 минут с 08:00 до 20:00 GMT+3."""
     log.info("Report loop started.")
@@ -8009,6 +8143,10 @@ async def _report_loop(bot):
                     )
                     log.info(f"Report sent to {REPORT_CHAT_ID}")
                 await asyncio.sleep(60)
+
+            # Проверка ошибок брокеров каждые 5 минут (10:00-20:00)
+            if 10 <= local_hour < 20 and local_minute % 5 == 0:
+                await _check_broker_errors(bot)
 
             # Ежедневный итоговый отчёт в 08:00 GMT+3 за вчера
             if local_hour == 8 and local_minute == 0:
