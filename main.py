@@ -7337,7 +7337,9 @@ _COUNTRY_ISO = {
     "nigeria": "NG", "kenya": "KE", "ghana": "GH", "india": "IN",
     "indonesia": "ID", "malaysia": "MY", "singapore": "SG", "thailand": "TH",
     "vietnam": "VN", "philippines": "PH", "japan": "JP", "south korea": "KR",
-    "new zealand": "NZ", "ukraine": "UA", "russia": "RU", "kazakhstan": "KZ",
+    "new zealand": "NZ", "new caledonia": "NC", "guadeloupe": "GP", "martinique": "MQ",
+    "french polynesia": "PF", "réunion": "RE", "reunion": "RE", "mayotte": "YT",
+    "ukraine": "UA", "russia": "RU", "kazakhstan": "KZ",
     "united arab emirates": "AE", "saudi arabia": "SA", "egypt": "EG",
     "morocco": "MA", "croatia": "HR", "serbia": "RS", "slovakia": "SK",
     "slovenia": "SI", "bulgaria": "BG", "latvia": "LV", "lithuania": "LT",
@@ -7895,7 +7897,7 @@ async def _build_daily_summary() -> str:
             # Убираем числовой ID из имени брокера (3402 - Legion → Legion)
             import re as _re
             clean_broker = _re.sub(r'^\d+\s*-\s*', '', broker_name).strip()
-            lines.append(f"  {clean_broker}: {b_leads}{conv_str}")
+            lines.append(f"  {escape_md(clean_broker)}: {b_leads}{conv_str}")
 
             # Аффы — сортируем по лидам
             for aff_id, data in sorted(affs.items(), key=lambda x: -x[1]["leads"]):
