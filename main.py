@@ -7484,7 +7484,7 @@ def _update_rotation_cap(broker_display: str, country: str, new_cap: int):
             return
 
 
-REPORT_CHAT_ID = -1003811333656  # Notifications чат (supergroup)
+REPORT_CHAT_ID = 2043229296  # Yehuda personal chat (testing)
 
 _COUNTRY_ISO = {
     "germany": "DE", "united kingdom": "GB", "uk": "GB", "australia": "AU",
