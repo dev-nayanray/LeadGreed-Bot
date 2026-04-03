@@ -7207,6 +7207,140 @@ async def on_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Error: {e}", disable_notification=True)
 
 
+async def on_sniff(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /sniff — перехватить payloads запросов к /api/stats при клике по табам."""
+    if update.effective_user.id not in ALLOWED_USERS:
+        return
+
+    await update.message.reply_text("🔍 Sniffing /api/stats payloads... navigating to analytics page", disable_notification=True)
+
+    try:
+        page = await get_page()
+        await page.goto(f"{CRM_URL}/stats/analytics", wait_until="domcontentloaded", timeout=30000)
+        await page.wait_for_timeout(3000)
+
+        # Monkey-patch fetch чтобы записывать все POST к /api/stats
+        await page.evaluate("""() => {
+            window.__captured_payloads = [];
+            const origFetch = window.fetch;
+            window.fetch = async function(...args) {
+                const [url, opts] = args;
+                if (opts && opts.method === 'POST' && typeof url === 'string' && url.includes('/api/stats')) {
+                    try {
+                        const body = typeof opts.body === 'string' ? JSON.parse(opts.body) : opts.body;
+                        window.__captured_payloads.push({
+                            url: url,
+                            timestamp: new Date().toISOString(),
+                            payload: body
+                        });
+                    } catch(e) {
+                        window.__captured_payloads.push({url: url, raw_body: opts.body, error: e.message});
+                    }
+                }
+                return origFetch.apply(this, args);
+            };
+        }""")
+
+        # Находим все табы на странице аналитики
+        tabs_info = await page.evaluate("""() => {
+            const tabs = document.querySelectorAll('.nav-link, [role="tab"], .tab-item, a[data-toggle="tab"], button[data-toggle="tab"]');
+            return Array.from(tabs).map(t => ({
+                text: t.innerText.trim(),
+                tag: t.tagName,
+                classes: t.className
+            }));
+        }""")
+
+        await update.message.reply_text(
+            f"📋 Found tabs: {json.dumps(tabs_info, indent=2)[:3000]}",
+            disable_notification=True
+        )
+
+        # Кликаем на каждый таб и ждём запроса
+        for tab_text in ["Brokers", "Affiliates", "Countries"]:
+            clicked = await page.evaluate(f"""() => {{
+                const tabs = document.querySelectorAll('.nav-link, [role="tab"], .tab-item, a[data-toggle="tab"], button[data-toggle="tab"]');
+                for (const t of tabs) {{
+                    if (t.innerText.trim().toLowerCase().includes('{tab_text.lower()}')) {{
+                        t.click();
+                        return t.innerText.trim();
+                    }}
+                }}
+                return null;
+            }}""")
+            if clicked:
+                log.info(f"Sniff: clicked tab '{clicked}'")
+                await page.wait_for_timeout(3000)
+
+        # Также попробуем кликнуть "This Month" в дэйт пикере
+        clicked_month = await page.evaluate("""() => {
+            // Ищем кнопки периодов (This Month, Today, Yesterday и т.д.)
+            const btns = document.querySelectorAll('button, .btn, [class*="range"], [class*="period"]');
+            for (const btn of btns) {
+                const txt = btn.innerText.trim().toLowerCase();
+                if (txt.includes('this month') || txt.includes('month')) {
+                    btn.click();
+                    return btn.innerText.trim();
+                }
+            }
+            // Ещё попробуем li элементы в дэйт-рэнж пикерах
+            const lis = document.querySelectorAll('li[data-range-key], .ranges li');
+            for (const li of lis) {
+                const txt = li.innerText.trim().toLowerCase();
+                if (txt.includes('this month') || txt === 'month') {
+                    li.click();
+                    return li.innerText.trim();
+                }
+            }
+            return null;
+        }""")
+        if clicked_month:
+            log.info(f"Sniff: clicked date range '{clicked_month}'")
+            await page.wait_for_timeout(3000)
+
+        # После клика по "This Month" снова кликаем табы
+        for tab_text in ["Brokers"]:
+            await page.evaluate(f"""() => {{
+                const tabs = document.querySelectorAll('.nav-link, [role="tab"], .tab-item, a[data-toggle="tab"], button[data-toggle="tab"]');
+                for (const t of tabs) {{
+                    if (t.innerText.trim().toLowerCase().includes('{tab_text.lower()}')) {{
+                        t.click();
+                        return true;
+                    }}
+                }}
+                return false;
+            }}""")
+            await page.wait_for_timeout(3000)
+
+        # Забираем перехваченные payloads
+        captured = await page.evaluate("() => window.__captured_payloads || []")
+
+        # Восстанавливаем оригинальный fetch
+        await page.evaluate("""() => {
+            if (window.__origFetch) window.fetch = window.__origFetch;
+            delete window.__captured_payloads;
+        }""")
+
+        if not captured:
+            await update.message.reply_text("❌ No /api/stats requests captured. Try /sniff again.", disable_notification=True)
+            return
+
+        # Отправляем каждый payload как отдельное сообщение
+        for i, cap in enumerate(captured):
+            payload_str = json.dumps(cap.get("payload", cap), indent=2, ensure_ascii=False)
+            msg = f"📦 *Request {i+1}*\n`{cap.get('url', '?')}`\n```json\n{payload_str[:3500]}\n```"
+            await update.message.reply_text(msg, parse_mode="Markdown", disable_notification=True)
+
+        await update.message.reply_text(
+            f"✅ Captured {len(captured)} requests total. Copy the Brokers payload and send it to me.",
+            disable_notification=True
+        )
+
+    except Exception as e:
+        log.warning(f"/sniff error: {e}")
+        await update.message.reply_text(f"❌ Error: {e}", disable_notification=True)
+
+
 # ══════════════════════════════════════════
 #  ОЧИСТКА РЕСУРСОВ
 # ══════════════════════════════════════════
@@ -8202,6 +8336,7 @@ def main():
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(_post_init).build()
     app.add_handler(CommandHandler("start", on_start))
     app.add_handler(CommandHandler("summary", on_summary))
+    app.add_handler(CommandHandler("sniff", on_sniff))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
     app.add_handler(CallbackQueryHandler(on_callback))
 
