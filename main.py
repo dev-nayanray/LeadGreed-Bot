@@ -7844,7 +7844,10 @@ async def _build_daily_summary() -> str:
 
     for lead in all_leads:
         c = lead.get("country") or "Unknown"
-        broker = lead.get("broker_name") or "Unknown"
+        # Если broker_name отсутствует — пропускаем лид (нераспределённый)
+        broker = lead.get("broker_name")
+        if not broker:
+            continue
         aff = str(lead.get("affid") or "?")
         is_ftd = lead.get("first_time_deposit") is not None
 
@@ -7855,8 +7858,11 @@ async def _build_daily_summary() -> str:
     now = datetime.datetime.utcnow() + datetime.timedelta(hours=3)
     lines = [f"📊 *Daily Summary {now.strftime('%d.%m.%Y')}*\n"]
 
-    # Сортируем по ISO коду страны
-    for country in sorted(country_data.keys(), key=lambda c: _country_iso(c)):
+    # Сортируем по количеству лидов (больше → выше)
+    def _country_total_leads(c):
+        return sum(sum(a["leads"] for a in affs.values()) for affs in country_data[c].values())
+
+    for country in sorted(country_data.keys(), key=_country_total_leads, reverse=True):
         flag = _country_flag(country)
         iso = _country_iso(country)
         brokers = country_data[country]
