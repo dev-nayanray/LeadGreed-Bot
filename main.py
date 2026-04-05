@@ -10,7 +10,12 @@ import datetime
 import json
 import logging
 import re
+import time
+import urllib.parse
+from collections import defaultdict
 from typing import Optional
+
+import aiohttp
 
 import anthropic
 from playwright.async_api import async_playwright, Page, Browser, BrowserContext
@@ -25,7 +30,8 @@ from telegram.ext import (
 # ─────────────────────────────────────────
 from config import (
     CRM_URL, CRM_EMAIL, CRM_PASSWORD,
-    TELEGRAM_TOKEN, ANTHROPIC_API_KEY, ALLOWED_USERS
+    TELEGRAM_TOKEN, ANTHROPIC_API_KEY, ALLOWED_USERS,
+    REPORT_CHAT_ID
 )
 import action_log as alog
 # ─────────────────────────────────────────
@@ -980,7 +986,6 @@ async def do_login():
 
 async def find_and_open_broker(page: Page, broker_id: str, country_hint: str = None, type_hint: str = None) -> Optional[str]:
     """Wrapper с кэшированием результата."""
-    import time
     # Кэш-ключ включает LATAM-признак и тип интеграции
     is_latam_hint = country_hint and country_hint.lower() in LATAM_COUNTRIES
     type_suffix = f"_{type_hint.lower()}" if type_hint else ""
@@ -1009,7 +1014,6 @@ async def _find_and_open_broker_impl(page: Page, broker_id: str, country_hint: s
     country_hint — название страны, для LATAM-маршрутизации.
     type_hint — тип интеграции (CRG/CPA), для выбора правильной интеграции.
     """
-    import time
     global _last_broker_full_name
     _last_broker_full_name = broker_id  # fallback
     broker_id = str(broker_id).strip()
@@ -1278,7 +1282,6 @@ async def _find_and_open_broker_impl(page: Page, broker_id: str, country_hint: s
 
 def _cache_broker_path(broker_id: str, path, name: str = None):
     """Сохранить base_path в кэш."""
-    import time
     if path:
         _broker_path_cache[broker_id.strip().lower()] = (path, time.time(), name or broker_id)
 
@@ -2758,7 +2761,6 @@ async def action_add_affiliate_revenue_grouped(affiliate_id: str, countries: lis
                 log.warning(f"Search input not found for {country}")
                 continue
 
-            val_before = await search_input.input_value()
 
             await search_input.evaluate("""el => {
                 el.value = '';
@@ -2959,7 +2961,6 @@ async def action_add_revenue_grouped(broker_id: str, countries: list, amount: st
                 log.warning(f"Search input not found for {country}")
                 continue
 
-            val_before = await search_input.input_value()
 
             # Очищаем через JS
             await search_input.evaluate("""el => {
@@ -3187,8 +3188,7 @@ async def action_add_revenue(broker_id: str, country: str, amount: str, affiliat
             aff_label = ""
             if existing_params:
                 # Извлекаем ID аффилиата из текста типа "1 parameter Affiliate 122 - Diamond"
-                import re as _re
-                aff_match = _re.search(r'(\d+)\s*-\s*', existing_params)
+                aff_match = re.search(r'(\d+)\s*-\s*', existing_params)
                 if aff_match:
                     aff_label = f" (Affiliate {aff_match.group(1)})"
                 else:
@@ -4420,8 +4420,7 @@ async def action_toggle_broker(broker_id: str, activate: bool) -> str:
         for r in rows:
             href = r.get("href", "")
             # href вида /clients/272/settings — извлекаем ID
-            import re as _re
-            m = _re.search(r'/clients/(\d+)/', href)
+            m = re.search(r'/clients/(\d+)/', href)
             if m and m.group(1) == broker_id:
                 matching.append(r)
         if not matching:
@@ -5512,7 +5511,6 @@ def build_confirm_text(action: dict) -> str:
         days_keep = ", ".join(action.get("days_to_keep", []))
         days_close = ", ".join(action.get("days_to_close", []))
         # Группируем по часам для компактности
-        from collections import defaultdict
         hours_groups = defaultdict(list)
         for ch in ch_list:
             hours_groups[f"{ch['start']}–{ch['end']}"].append(ch['country'])
@@ -6327,7 +6325,6 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                         rev_broker_base = await find_and_open_broker(page, str(broker_id), country_hint=first_country)
                         rev_broker_display = _last_broker_full_name  # сохраняем имя сразу
                         # Группируем страны по одинаковой сумме + affiliate_id
-                        from collections import defaultdict
                         groups = defaultdict(list)
                         for cr in country_revenues:
                             key = (str(cr.get("amount", "")), str(cr.get("affiliate_id") or ""))
@@ -6369,7 +6366,6 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
                 else:
                     sub_results = []
                     # Группируем страны по одинаковой сумме → меньше открытий модалки
-                    from collections import defaultdict
                     groups = defaultdict(list)
                     for cr in cr_list:
                         groups[str(cr.get("amount", ""))].append(cr.get("country", "all"))
@@ -7486,7 +7482,6 @@ def _update_rotation_cap(broker_display: str, country: str, new_cap: int):
             return
 
 
-REPORT_CHAT_ID = 2043229296  # Yehuda personal chat (testing)
 
 _COUNTRY_ISO = {
     "germany": "DE", "united kingdom": "GB", "uk": "GB", "australia": "AU",
@@ -7615,8 +7610,6 @@ async def _fetch_last_funnel(affiliate_id: str, country: str) -> str:
 
 async def _fetch_first_lead(broker_name: str, aff_ids: list, country: str) -> str:
     """Получить email первого лида для ротации."""
-    import aiohttp
-    import urllib.parse
 
     if not _context:
         return ""
@@ -7690,83 +7683,10 @@ async def _fetch_first_lead(broker_name: str, aff_ids: list, country: str) -> st
     except Exception as e:
         log.warning(f"First lead fetch error: {e}")
     return ""
-    """Запросить статистику из CRM API используя cookies браузера."""
-    import aiohttp
-    import urllib.parse
-
-    if not _context:
-        return []
-
-    cookies_list = await _context.cookies()
-    cookies = {c["name"]: c["value"] for c in cookies_list}
-
-    # XSRF-TOKEN может быть URL-encoded
-    xsrf = cookies.get("XSRF-TOKEN", "")
-    try:
-        xsrf = urllib.parse.unquote(xsrf)
-    except Exception:
-        pass
-
-    now = datetime.datetime.now()
-    from_dt = now.strftime("%Y-%m-%d 00:00:00")
-    to_dt = now.strftime("%Y-%m-%d 23:59:59")
-
-    payload = {
-        "successfullLeadsOnly": False,
-        "hideDuplicateFailedLeads": False,
-        "from_datetime": from_dt,
-        "to_datetime": to_dt,
-        "timezone": "Europe/Istanbul",
-        "group_by": group_by,
-        "breakdowns": [],
-        "from_page": "stats",
-        "breakdown_request": True,
-        "test_leads": "exclude",
-        "trafficType": "all",
-        "insideHoursOnly": False,
-        "createdInsideDateRangeOnly": False,
-        "aggregateFields": [
-            {"key": "id", "show": True},
-            {"key": "name", "show": True},
-            {"key": "total_leads", "show": True},
-            {"key": "successful_leads", "show": True},
-        ],
-    }
-
-    headers = {
-        "Content-Type": "application/json;charset=utf-8",
-        "Accept": "application/json, text/plain, */*",
-        "X-XSRF-TOKEN": xsrf,
-        "Referer": f"{CRM_URL}/stats/analytics",
-        "Origin": CRM_URL,
-    }
-
-    try:
-        async with aiohttp.ClientSession(cookies=cookies) as session:
-            async with session.post(
-                f"{CRM_URL}/api/stats",
-                json=payload,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=30),
-                ssl=False
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    log.info(f"Stats API ({group_by}): {len(data)} records")
-                    return data
-                else:
-                    text = await resp.text()
-                    log.warning(f"Stats API returned {resp.status}: {text[:200]}")
-                    return []
-    except Exception as e:
-        log.warning(f"Stats API error: {e}")
-        return []
 
 
 async def _fetch_all_leads_today(target_date=None) -> list:
     """Fetch all detailed leads for a given date via aiohttp. Defaults to today GMT+3."""
-    import aiohttp
-    import urllib.parse
 
     if not _context:
         log.warning("_fetch_all_leads_today: no browser context")
@@ -8203,7 +8123,6 @@ async def _build_daily_summary(target_date=None) -> str:
     log.info(f"_build_daily_summary: {len(all_leads)} leads for {target_date}")
 
     # Группируем: country → broker → {aff → {leads, ftd}}
-    from collections import defaultdict
     country_data = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: {"leads": 0, "ftd": 0})))
 
     for lead in all_leads:
@@ -8253,8 +8172,7 @@ async def _build_daily_summary(target_date=None) -> str:
                 pct = round(b_ftd / b_leads * 100, 1) if b_leads else 0
                 conv_str = f" ({b_ftd} ftd, {pct}%)"
             # Убираем числовой ID и эмодзи из имени брокера
-            import re as _re
-            clean_broker = _re.sub(r'^\d+\s*-\s*', '', broker_name).strip()
+            clean_broker = re.sub(r'^\d+\s*-\s*', '', broker_name).strip()
             clean_broker = clean_broker.replace('🟩', '').replace('🟢', '').strip()
             # Индикатор: ❗ если нет FTD и больше 10 лидов
             indicator = "❗" if b_ftd == 0 and b_leads > 10 else ""
@@ -8277,7 +8195,6 @@ _alerted_error_leads: set = set()
 
 async def _check_broker_errors(bot):
     """Проверить последние лиды на ошибки брокеров (Offer not found, No brokers available и т.д.)."""
-    import aiohttp, urllib.parse
 
     if not _context:
         return
