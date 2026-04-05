@@ -3403,26 +3403,30 @@ async def action_change_distribution(aff_id: str, country: str,
     log.info(f"[dist] Step 2: typed '{search_term}'")
     await page.wait_for_timeout(2500)
 
-    # ── Шаг 3: Кликнуть на badge именно для нужной страны (через Playwright) ──
-    # Ищем строку таблицы содержащую название страны, потом badge внутри неё
-    badge = None
-    rows = await page.query_selector_all("table tr, tr")
-    for row in rows:
-        row_text = (await row.inner_text()).strip()
-        if search_term.lower() not in row_text.lower():
-            continue
-        # Нашли строку страны — ищем badge внутри
-        badge = await row.query_selector("span.badge, span[class*='badge']")
-        if badge:
-            break
+    # ── Шаг 3: Кликнуть на badge именно для нужной страны (JS click в правильной строке) ──
+    badge_result = await page.evaluate("""(countryQuery) => {
+        const rows = document.querySelectorAll('table tr');
+        for (const row of rows) {
+            const firstTd = row.querySelector('td');
+            if (!firstTd) continue;
+            const countryText = firstTd.innerText.trim();
+            if (!countryText.toLowerCase().includes(countryQuery.toLowerCase())) continue;
+            // Нашли строку страны — кликаем badge
+            const badge = row.querySelector('span.badge, span[class*="badge"]');
+            if (badge) {
+                const badgeText = badge.innerText.trim();
+                badge.click();
+                return {clicked: true, badge: badgeText, country: countryText};
+            }
+            return {clicked: false, country: countryText, noBadge: true};
+        }
+        return {clicked: false, noCountry: true};
+    }""", search_term)
 
-    if not badge:
-        rows_debug = await page.evaluate("() => Array.from(document.querySelectorAll('td')).map(td => td.innerText.trim()).slice(0, 10)")
-        return f"❌ Country '{country}' badge not found. Page tds: {rows_debug}"
+    log.info(f"[dist] Step 3: badge_result = {badge_result}")
 
-    badge_text = (await badge.inner_text()).strip()
-    log.info(f"[dist] Step 3: clicking badge '{badge_text}' in {country} row via Playwright")
-    await badge.click()
+    if not badge_result.get("clicked"):
+        return f"❌ Country '{country}' badge not found. Debug: {badge_result}"
 
     # Ждём пока подтаблица с аффилиатами загрузится (количество td должно вырасти)
     prev_tds = 0
