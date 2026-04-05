@@ -7701,7 +7701,7 @@ async def _fetch_all_leads_today(target_date=None) -> list:
         pass
 
     if target_date is None:
-        target_date = (datetime.datetime.utcnow() + datetime.timedelta(hours=3)).date()
+        target_date = (datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=3)).date()
     from_dt = f"{target_date} 00:00:00"
     to_dt = f"{target_date} 23:59:59"
 
@@ -7834,7 +7834,7 @@ async def _build_report() -> str:
     for bname, binfo in today_rotations.items():
         log.info(f"_build_report ROTATION: broker={bname!r} broker_id={_extract_broker_id(bname)} country={binfo.get('country')!r}")
 
-    now = datetime.datetime.utcnow() + datetime.timedelta(hours=3)
+    now = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=3)
     time_str = now.strftime("%H:%M")
     lines = [f"📊 *Stats {time_str}*\n"]
 
@@ -8119,7 +8119,7 @@ async def _build_daily_summary(target_date=None) -> str:
         return ""
 
     if target_date is None:
-        target_date = (datetime.datetime.utcnow() + datetime.timedelta(hours=3)).date()
+        target_date = (datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=3)).date()
     log.info(f"_build_daily_summary: {len(all_leads)} leads for {target_date}")
 
     # Группируем: country → broker → {aff → {leads, ftd}}
@@ -8138,7 +8138,7 @@ async def _build_daily_summary(target_date=None) -> str:
         if is_ftd:
             country_data[c][broker][aff]["ftd"] += 1
 
-    now = datetime.datetime.utcnow() + datetime.timedelta(hours=3)
+    now = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=3)
     date_str = target_date.strftime('%d.%m.%Y') if hasattr(target_date, 'strftime') else str(target_date)
     lines = [f"📊 *Daily Summary {date_str}*\n"]
 
@@ -8207,7 +8207,7 @@ async def _check_broker_errors(bot):
     except Exception:
         pass
 
-    now = datetime.datetime.utcnow() + datetime.timedelta(hours=3)
+    now = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=3)
     from_dt = now.strftime("%Y-%m-%d 00:00:00")
     to_dt = now.strftime("%Y-%m-%d 23:59:59")
 
@@ -8354,7 +8354,7 @@ async def _report_loop(bot):
                     log.warning(f"Report loop: browser init failed: {e}")
                     continue
 
-            now = datetime.datetime.utcnow()
+            now = datetime.datetime.now(datetime.UTC)
             local_hour = (now.hour + 3) % 24
             local_minute = now.minute
             today_date = (now + datetime.timedelta(hours=3)).date()
@@ -8401,7 +8401,7 @@ async def _report_loop(bot):
                             country_iso = _country_iso(country)
                             aff_str = "/".join(info.get("affs", []))
                             lead_aff = str(found_lead.get("affid", "?"))
-                            time_str = (datetime.datetime.utcnow() + datetime.timedelta(hours=3)).strftime("%H:%M")
+                            time_str = (datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=3)).strftime("%H:%M")
                             msg = f"▶️ *STARTED*\n{broker_name.replace('🟩', '').replace('🟢', '').strip()} {flag}{country_iso}"
                             msg += f" • {time_str}"
                             # Email первого лида с указанием аффа
@@ -8444,7 +8444,7 @@ async def _report_loop(bot):
 
             # Ежедневный итоговый отчёт в 08:00 GMT+3 за вчера
             if local_hour == 8 and local_minute == 0:
-                yesterday = (datetime.datetime.utcnow() + datetime.timedelta(hours=3) - datetime.timedelta(days=1)).date()
+                yesterday = (datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=3) - datetime.timedelta(days=1)).date()
                 summary = await _build_daily_summary(yesterday)
                 if summary:
                     for chunk in _split_message(summary, 4000):
@@ -8459,7 +8459,7 @@ async def _report_loop(bot):
 
             # Ежедневный итоговый отчёт в 17:00 GMT+3 за сегодня
             if local_hour == 17 and local_minute == 0:
-                today = (datetime.datetime.utcnow() + datetime.timedelta(hours=3)).date()
+                today = (datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=3)).date()
                 summary = await _build_daily_summary(today)
                 if summary:
                     # Telegram лимит 4096 символов — разбиваем если нужно
