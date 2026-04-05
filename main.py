@@ -3440,47 +3440,45 @@ async def action_change_distribution(aff_id: str, country: str,
     log.info(f"[dist] Step 3: URL after badge click = {page.url}")
 
     # ── Шаг 4: Найти строку аффилиата и открыть ротацию ──
+    # Ищем по <td> содержимому (не по всему <tr>), чтобы не попасть в wrapper-ряд
     edit_result = await page.evaluate("""(affId) => {
-        const rows = document.querySelectorAll('table tr, tr');
         const debug = [];
-        for (const row of rows) {
-            const text = row.innerText || '';
-            // Ищем строку с аффом
+        // Ищем все ячейки таблицы содержащие ID аффилиата
+        const tds = document.querySelectorAll('td');
+        for (const td of tds) {
+            const tdText = td.innerText.trim();
+            // Матчим только если <td> НАПРЯМУЮ содержит паттерн с аффом
+            // Формат: "Mexico - 31 - Leada (453) (31)" или "(31)"
             const patterns = [
                 '- ' + affId + ' -',
                 '(' + affId + ')',
-                '(' + affId + ') ',
-                ' ' + affId + ' ',
-                '- ' + affId + '\\n',
             ];
-            const match = patterns.some(p => text.includes(p));
-            if (!match) continue;
-            debug.push({text: text.substring(0, 100)});
-            // Ищем все кнопки в строке
-            const allBtns = row.querySelectorAll('button');
-            const btnInfo = [];
-            for (const btn of allBtns) {
-                const cls = btn.className || '';
-                const txt = btn.innerText.trim();
-                const isSvg = !!btn.querySelector('svg, i');
-                btnInfo.push({cls: cls.substring(0, 60), txt, isSvg});
-                // Кнопка редактирования — обычно маленькая с иконкой
-                if (cls.includes('btn-outline-primary') && cls.includes('btn-sm') && !cls.includes('btn-danger')) {
-                    btn.click();
-                    return {clicked: true, affText: text.substring(0, 80)};
-                }
-            }
-            // Fallback: первая кнопка не-danger с иконкой
-            for (const btn of allBtns) {
+            if (!patterns.some(p => tdText.includes(p))) continue;
+            // Проверяем что это не слишком длинная ячейка (wrapper)
+            if (tdText.length > 200) continue;
+            debug.push(tdText.substring(0, 80));
+
+            // Нашли правильную ячейку — ищем кнопку в этом же ряду
+            const row = td.closest('tr');
+            if (!row) continue;
+
+            // Ищем первую кнопку-иконку (btn-outline-primary btn-sm) в Actions колонке
+            const btns = row.querySelectorAll('button.btn-outline-primary.btn-sm, button.btn-sm.btn-secondary');
+            for (const btn of btns) {
                 if (btn.className.includes('btn-danger')) continue;
-                if (btn.querySelector('svg, i') || btn.innerText.trim() === '') {
-                    btn.click();
-                    return {clicked: true, affText: text.substring(0, 80), fallback: true};
-                }
+                // Первая подходящая кнопка (иконка без текста = карандаш/глаз)
+                btn.click();
+                return {clicked: true, affText: tdText.substring(0, 80), btnCls: btn.className.substring(0, 60)};
             }
-            return {clicked: false, affText: text.substring(0, 80), buttons: btnInfo};
+            return {clicked: false, affText: tdText.substring(0, 80), noBtns: true, rowBtns: row.querySelectorAll('button').length};
         }
-        return {clicked: false, debug: debug.slice(0, 5), totalRows: rows.length};
+        // Fallback debug: показать все td которые содержат число похожее на affId
+        const allTexts = [];
+        for (const td of tds) {
+            const t = td.innerText.trim();
+            if (t.includes(affId) && t.length < 150) allTexts.push(t.substring(0, 80));
+        }
+        return {clicked: false, debug: debug.slice(0, 5), allMatches: allTexts.slice(0, 5), totalTds: tds.length};
     }""", str(aff_id))
 
     log.info(f"[dist] Step 4: edit_result = {edit_result}")
