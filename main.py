@@ -3436,8 +3436,20 @@ async def action_change_distribution(aff_id: str, country: str,
     if not badge_result.get("clicked"):
         return f"❌ Country '{country}' not found in distributions. Debug: {badge_result}"
 
-    await page.wait_for_timeout(3000)
-    log.info(f"[dist] Step 3: URL after badge click = {page.url}")
+    # Ждём пока подтаблица с аффилиатами загрузится (количество td должно вырасти)
+    prev_tds = 0
+    stable = 0
+    for _ in range(25):
+        await page.wait_for_timeout(500)
+        cur_tds = await page.evaluate("() => document.querySelectorAll('td').length")
+        if cur_tds > 10 and cur_tds == prev_tds:
+            stable += 1
+            if stable >= 2:
+                break
+        else:
+            stable = 0
+        prev_tds = cur_tds
+    log.info(f"[dist] Step 3: waited for affiliates, {cur_tds} tds found. URL = {page.url}")
 
     # ── Шаг 4: Найти строку аффилиата и открыть ротацию ──
     # Ищем по <td> содержимому (не по всему <tr>), чтобы не попасть в wrapper-ряд
