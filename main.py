@@ -3525,10 +3525,83 @@ async def action_change_distribution(aff_id: str, country: str,
     if not target_btn:
         return f"❌ Affiliate {aff_id} / {country} not found. Row: '{target_text}'"
 
-    log.info(f"[dist] Step 4: found row '{target_text}', clicking via Playwright")
-    await target_btn.click()  # Playwright native click — триггерит Vue
-    await page.wait_for_timeout(3000)
-    log.info(f"[dist] Step 4: URL after click = {page.url}")
+    log.info(f"[dist] Step 4: found row '{target_text}'")
+
+    # Дебаг: инспектируем ВСЕ кнопки/ссылки в этой строке
+    btn_debug = await page.evaluate("""(params) => {
+        const rows = document.querySelectorAll('table tr, tr[role="row"]');
+        for (const row of rows) {
+            const text = row.innerText || '';
+            if (!(text.includes('(' + params.affId + ')') || text.includes('- ' + params.affId + ' -'))) continue;
+            if (!text.toLowerCase().includes(params.country.toLowerCase())) continue;
+            // Нашли строку — инспектируем все кликабельные элементы
+            const elements = row.querySelectorAll('button, a, span.clickable, [role="button"]');
+            return Array.from(elements).map(el => ({
+                tag: el.tagName,
+                cls: (el.className || '').substring(0, 80),
+                href: el.getAttribute('href'),
+                title: el.getAttribute('title'),
+                ariaLabel: el.getAttribute('aria-label'),
+                text: el.innerText.trim().substring(0, 30),
+                svg: !!el.querySelector('svg'),
+                html: el.innerHTML.substring(0, 60),
+            }));
+        }
+        return [];
+    }""", {"affId": str(aff_id), "country": search_term})
+    log.info(f"[dist] Step 4: row elements = {btn_debug}")
+
+    # Пробуем 3 метода клика
+    # 1. Playwright click с force
+    try:
+        await target_btn.click(force=True)
+        log.info("[dist] Step 4: Playwright force-click done")
+    except Exception as e:
+        log.warning(f"[dist] Step 4: force-click failed: {e}")
+
+    await page.wait_for_timeout(2000)
+
+    # Проверяем — появился ли ADD BROKER?
+    add_btn_check = await page.query_selector("button:has-text('ADD BROKER')")
+    if add_btn_check:
+        log.info("[dist] Step 4: ADD BROKER found after force-click!")
+    else:
+        # 2. dispatch_event
+        try:
+            await target_btn.dispatch_event("click")
+            log.info("[dist] Step 4: dispatch_event done")
+            await page.wait_for_timeout(2000)
+        except Exception as e:
+            log.warning(f"[dist] Step 4: dispatch_event failed: {e}")
+
+        add_btn_check = await page.query_selector("button:has-text('ADD BROKER')")
+        if not add_btn_check:
+            # 3. JS MouseEvent dispatch
+            await page.evaluate("""(params) => {
+                const rows = document.querySelectorAll('table tr, tr[role="row"]');
+                for (const row of rows) {
+                    const text = row.innerText || '';
+                    if (!(text.includes('(' + params.affId + ')') || text.includes('- ' + params.affId + ' -'))) continue;
+                    if (!text.toLowerCase().includes(params.country.toLowerCase())) continue;
+                    const btns = row.querySelectorAll('button.btn-outline-primary.btn-sm:not(.btn-danger)');
+                    if (btns[0]) {
+                        btns[0].dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, view:window}));
+                        return 'dispatched';
+                    }
+                }
+                return 'not found';
+            }""", {"affId": str(aff_id), "country": search_term})
+            log.info("[dist] Step 4: JS MouseEvent dispatched")
+            await page.wait_for_timeout(2000)
+
+    # Скриншот после всех попыток
+    try:
+        await page.screenshot(path="/root/auto-b2026/dist_debug.png")
+        log.info("[dist] Step 4: screenshot saved")
+    except Exception:
+        pass
+
+    log.info(f"[dist] Step 4: URL after clicks = {page.url}")
 
     # ── Шаг 5: Нажать + ADD BROKER ──
     # Проверяем что мы на правильной странице
