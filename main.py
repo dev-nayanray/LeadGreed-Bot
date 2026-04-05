@@ -3403,23 +3403,26 @@ async def action_change_distribution(aff_id: str, country: str,
     log.info(f"[dist] Step 2: typed '{search_term}'")
     await page.wait_for_timeout(2500)
 
-    # ── Шаг 3: Кликнуть на badge с distributions (через Playwright, не JS) ──
-    badge = await page.query_selector("span.badge.clickable, span.badge.badge-primary, span.badge[class*='clickable']")
-    if not badge:
-        # Fallback: ищем любой badge в таблице
-        badges = await page.query_selector_all("span.badge, span[class*='badge-primary']")
-        for b in badges:
-            txt = (await b.inner_text()).strip()
-            if "distribution" in txt.lower():
-                badge = b
-                break
+    # ── Шаг 3: Кликнуть на badge именно для нужной страны (через Playwright) ──
+    # Ищем строку таблицы содержащую название страны, потом badge внутри неё
+    badge = None
+    rows = await page.query_selector_all("table tr, tr")
+    for row in rows:
+        row_text = (await row.inner_text()).strip()
+        if search_term.lower() not in row_text.lower():
+            continue
+        # Нашли строку страны — ищем badge внутри
+        badge = await row.query_selector("span.badge, span[class*='badge']")
+        if badge:
+            break
+
     if not badge:
         rows_debug = await page.evaluate("() => Array.from(document.querySelectorAll('td')).map(td => td.innerText.trim()).slice(0, 10)")
-        return f"❌ Country badge not found. Page tds: {rows_debug}"
+        return f"❌ Country '{country}' badge not found. Page tds: {rows_debug}"
 
     badge_text = (await badge.inner_text()).strip()
-    log.info(f"[dist] Step 3: clicking badge '{badge_text}' via Playwright")
-    await badge.click()  # Playwright native click — триггерит Vue
+    log.info(f"[dist] Step 3: clicking badge '{badge_text}' in {country} row via Playwright")
+    await badge.click()
 
     # Ждём пока подтаблица с аффилиатами загрузится (количество td должно вырасти)
     prev_tds = 0
