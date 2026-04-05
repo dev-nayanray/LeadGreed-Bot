@@ -3490,61 +3490,45 @@ async def action_change_distribution(aff_id: str, country: str,
     except Exception:
         pass
 
-    # ── Шаг 4: Найти строку с нужным аффом и страной → кликнуть edit ──
-    # В ALL view каждая строка = отдельная distribution: "Country - AffID - Name (ID) (AffID)"
-    edit_result = await page.evaluate("""(params) => {
-        const affId = params.affId;
-        const country = params.country;
-        const debug = [];
-        const rows = document.querySelectorAll('table tr, tr[role="row"]');
+    # ── Шаг 4: Найти строку с нужным аффом и страной → кликнуть edit через Playwright ──
+    # JS click не триггерит Vue — используем Playwright native click
+    rows = await page.query_selector_all("table tr, tr[role='row']")
+    target_btn = None
+    target_text = ""
+    for row in rows:
+        text = (await row.inner_text()).strip()
+        if len(text) > 500:
+            continue
+        has_aff = f"- {aff_id} -" in text or f"({aff_id})" in text or f" {aff_id} " in text
+        has_country = search_term.lower() in text.lower()
+        if has_aff and has_country:
+            target_text = text[:120]
+            # Ищем первую кнопку edit (btn-outline-primary btn-sm, не danger)
+            btns = await row.query_selector_all("button.btn-outline-primary.btn-sm")
+            for btn in btns:
+                cls = await btn.get_attribute("class") or ""
+                if "btn-danger" in cls:
+                    continue
+                target_btn = btn
+                break
+            if not target_btn:
+                # Fallback: любая кнопка btn-sm не-danger
+                btns = await row.query_selector_all("button.btn-sm")
+                for btn in btns:
+                    cls = await btn.get_attribute("class") or ""
+                    if "btn-danger" in cls:
+                        continue
+                    target_btn = btn
+                    break
+            break
 
-        for (const row of rows) {
-            const text = row.innerText || '';
-            if (text.length > 500) continue;
+    if not target_btn:
+        return f"❌ Affiliate {aff_id} / {country} not found. Row: '{target_text}'"
 
-            // Проверяем наличие аффа И страны в одной строке
-            const hasAff = text.includes('- ' + affId + ' -') || text.includes('(' + affId + ')') || text.includes(' ' + affId + ' ');
-            const hasCountry = text.toLowerCase().includes(country.toLowerCase());
-
-            if (hasAff && hasCountry) {
-                debug.push({text: text.substring(0, 120), match: 'both'});
-                // Ищем кнопку edit
-                const btns = row.querySelectorAll('button');
-                for (const btn of btns) {
-                    const cls = btn.className || '';
-                    if (cls.includes('btn-danger')) continue;
-                    if (cls.includes('btn-outline-primary') && cls.includes('btn-sm')) {
-                        btn.click();
-                        return {clicked: true, text: text.substring(0, 120)};
-                    }
-                }
-                // Fallback: первая кнопка с иконкой
-                for (const btn of btns) {
-                    if (btn.className.includes('btn-danger')) continue;
-                    if (btn.querySelector('svg, i') || !btn.innerText.trim()) {
-                        btn.click();
-                        return {clicked: true, text: text.substring(0, 120), fallback: true};
-                    }
-                }
-                return {clicked: false, text: text.substring(0, 120), noBtns: true, btnCount: btns.length};
-            }
-
-            // Дебаг: записываем строки которые совпадают частично
-            if (hasAff || hasCountry) {
-                debug.push({text: text.substring(0, 100), hasAff, hasCountry});
-            }
-        }
-
-        return {clicked: false, debug: debug.slice(0, 8), totalRows: rows.length};
-    }""", {"affId": str(aff_id), "country": search_term})
-
-    log.info(f"[dist] Step 4: edit_result = {edit_result}")
-
-    if not edit_result.get("clicked"):
-        return f"❌ Affiliate {aff_id} / {country} not found. Debug: {edit_result}"
-
+    log.info(f"[dist] Step 4: found row '{target_text}', clicking via Playwright")
+    await target_btn.click()  # Playwright native click — триггерит Vue
     await page.wait_for_timeout(3000)
-    log.info(f"[dist] Step 4: URL after edit click = {page.url}")
+    log.info(f"[dist] Step 4: URL after click = {page.url}")
 
     # ── Шаг 5: Нажать + ADD BROKER ──
     # Проверяем что мы на правильной странице
