@@ -3365,106 +3365,137 @@ async def action_add_revenue(broker_id: str, country: str, amount: str, affiliat
 
 async def action_change_distribution(aff_id: str, country: str,
                                       old_broker_id: str, new_broker_id: str) -> str:
-    """Изменить ротацию: добавить нового брокера и поставить старому 0%.
-
-    Шаги:
-    1. Перейти на /distributions
-    2. Найти страну → открыть список ротаций
-    3. Найти строку аффа → открыть ротацию
-    4. ADD BROKER → выбрать нового → сохранить
-    5. Поставить старому 0% → SAVE GROUP(S)
-    """
+    """Изменить ротацию: добавить нового брокера и поставить старому 0%."""
     page = await get_page()
 
     # ── Шаг 1: Переход на страницу distributions ──
     dist_url = f"{CRM_URL.rstrip('/')}/distributions"
+    log.info(f"[dist] Step 1: navigating to {dist_url}")
     await page.goto(dist_url, wait_until="domcontentloaded", timeout=30000)
-    await page.wait_for_timeout(2000)
+    await page.wait_for_timeout(3000)
+    log.info(f"[dist] Step 1: URL = {page.url}")
 
     # ── Шаг 2: Поиск страны ──
     search_input = None
     for selector in [
-        "input[type='search']",
         "input[placeholder*='earch']",
         "input.form-control[type='text']",
+        "input[type='search']",
+        "input[type='text']",
     ]:
         try:
             search_input = await page.wait_for_selector(selector, timeout=3000)
             if search_input:
+                log.info(f"[dist] Step 2: search input found with '{selector}'")
                 break
         except Exception:
             continue
 
     if not search_input:
+        log.warning("[dist] Step 2: search input NOT found")
         return "❌ Distribution search input not found."
 
+    search_term = _country_search_term(country)
     await search_input.click(click_count=3)
     await page.keyboard.press("Backspace")
     await page.wait_for_timeout(300)
-    await search_input.type(_country_search_term(country), delay=60)
-    await page.wait_for_timeout(2000)
+    await search_input.type(search_term, delay=60)
+    log.info(f"[dist] Step 2: typed '{search_term}'")
+    await page.wait_for_timeout(2500)
 
     # ── Шаг 3: Кликнуть на badge с distributions ──
-    badge_clicked = await page.evaluate("""(countryQuery) => {
+    badge_result = await page.evaluate("""(countryQuery) => {
         const rows = document.querySelectorAll('table tr, tr');
+        const debug = [];
         for (const row of rows) {
             const tds = row.querySelectorAll('td');
             if (tds.length < 2) continue;
             const countryTd = tds[0];
-            if (!countryTd.innerText.toLowerCase().includes(countryQuery.toLowerCase())) continue;
-            const badge = row.querySelector('.badge, span[class*="badge"]');
-            if (badge) { badge.click(); return true; }
+            const countryText = countryTd.innerText.trim();
+            if (!countryText) continue;
+            debug.push(countryText);
+            if (!countryText.toLowerCase().includes(countryQuery.toLowerCase())) continue;
+            // Ищем кликабельный badge
+            const badge = row.querySelector('span.badge, span[class*="badge"], a[class*="badge"]');
+            if (badge) { badge.click(); return {clicked: true, country: countryText}; }
+            // Fallback: любой span с числом в тексте
+            const spans = row.querySelectorAll('span');
+            for (const span of spans) {
+                if (/\d+ distribution/.test(span.innerText)) {
+                    span.click();
+                    return {clicked: true, country: countryText, fallback: true};
+                }
+            }
+            return {clicked: false, country: countryText, noBadge: true};
         }
-        return false;
-    }""", _country_search_term(country))
+        return {clicked: false, rows: debug.slice(0, 10)};
+    }""", search_term)
 
-    if not badge_clicked:
-        return f"❌ Country '{country}' not found in distributions."
+    log.info(f"[dist] Step 3: badge_result = {badge_result}")
 
-    await page.wait_for_timeout(2000)
+    if not badge_result.get("clicked"):
+        return f"❌ Country '{country}' not found in distributions. Debug: {badge_result}"
+
+    await page.wait_for_timeout(3000)
+    log.info(f"[dist] Step 3: URL after badge click = {page.url}")
 
     # ── Шаг 4: Найти строку аффилиата и открыть ротацию ──
-    # Ищем строку содержащую aff_id и кликаем кнопку редактирования
-    edit_clicked = await page.evaluate("""(affId) => {
-        const rows = document.querySelectorAll('table tr, tr, [class*="row"]');
+    edit_result = await page.evaluate("""(affId) => {
+        const rows = document.querySelectorAll('table tr, tr');
+        const debug = [];
         for (const row of rows) {
-            const text = row.innerText;
-            // Ищем строку где есть "- AFF_ID -" или "(AFF_ID)" или просто AFF_ID как отдельное число
+            const text = row.innerText || '';
+            // Ищем строку с аффом
             const patterns = [
                 '- ' + affId + ' -',
                 '(' + affId + ')',
+                '(' + affId + ') ',
                 ' ' + affId + ' ',
+                '- ' + affId + '\\n',
             ];
             const match = patterns.some(p => text.includes(p));
             if (!match) continue;
-            // Ищем кнопку редактирования (карандаш)
-            const editBtns = row.querySelectorAll(
-                'button.btn-outline-primary.btn-sm.btn-secondary, ' +
-                'button.btn-sm.btn-secondary, ' +
-                'a[href*="distribution"]'
-            );
-            for (const btn of editBtns) {
-                // Пропускаем delete (красные) кнопки
-                if (btn.classList.contains('btn-danger')) continue;
-                const icon = btn.querySelector('svg, i');
-                if (icon || btn.innerText.trim() === '') {
+            debug.push({text: text.substring(0, 100)});
+            // Ищем все кнопки в строке
+            const allBtns = row.querySelectorAll('button');
+            const btnInfo = [];
+            for (const btn of allBtns) {
+                const cls = btn.className || '';
+                const txt = btn.innerText.trim();
+                const isSvg = !!btn.querySelector('svg, i');
+                btnInfo.push({cls: cls.substring(0, 60), txt, isSvg});
+                // Кнопка редактирования — обычно маленькая с иконкой
+                if (cls.includes('btn-outline-primary') && cls.includes('btn-sm') && !cls.includes('btn-danger')) {
                     btn.click();
-                    return true;
+                    return {clicked: true, affText: text.substring(0, 80)};
                 }
             }
-            // Fallback: любая кнопка в этой строке
-            const anyBtn = row.querySelector('button.btn-outline-primary');
-            if (anyBtn) { anyBtn.click(); return true; }
+            // Fallback: первая кнопка не-danger с иконкой
+            for (const btn of allBtns) {
+                if (btn.className.includes('btn-danger')) continue;
+                if (btn.querySelector('svg, i') || btn.innerText.trim() === '') {
+                    btn.click();
+                    return {clicked: true, affText: text.substring(0, 80), fallback: true};
+                }
+            }
+            return {clicked: false, affText: text.substring(0, 80), buttons: btnInfo};
         }
-        return false;
+        return {clicked: false, debug: debug.slice(0, 5), totalRows: rows.length};
     }""", str(aff_id))
 
-    if not edit_clicked:
-        return f"❌ Affiliate {aff_id} not found in {country} distributions."
+    log.info(f"[dist] Step 4: edit_result = {edit_result}")
 
-    await page.wait_for_timeout(2000)
+    if not edit_result.get("clicked"):
+        return f"❌ Affiliate {aff_id} not found in {country} distributions. Debug: {edit_result}"
+
+    await page.wait_for_timeout(3000)
+    log.info(f"[dist] Step 4: URL after edit click = {page.url}")
 
     # ── Шаг 5: Нажать + ADD BROKER ──
+    # Проверяем что мы на правильной странице
+    page_text = await page.evaluate("() => document.body.innerText.substring(0, 500)")
+    log.info(f"[dist] Step 5: page text preview = {page_text[:200]}")
+
     try:
         add_btn = await page.wait_for_selector(
             "button:has-text('ADD BROKER'), .btn:has-text('ADD BROKER')",
@@ -3472,8 +3503,16 @@ async def action_change_distribution(aff_id: str, country: str,
         )
         await add_btn.click()
         await page.wait_for_timeout(1000)
+        log.info("[dist] Step 5: ADD BROKER clicked")
     except Exception:
-        return "❌ ADD BROKER button not found."
+        # Дебаг: какие кнопки есть на странице
+        btns = await page.evaluate("""() => {
+            return Array.from(document.querySelectorAll('button, .btn')).slice(0, 20).map(b =>
+                ({text: b.innerText.trim().substring(0, 40), cls: b.className.substring(0, 60)})
+            );
+        }""")
+        log.warning(f"[dist] Step 5: ADD BROKER not found. Buttons on page: {btns}")
+        return f"❌ ADD BROKER button not found. Page buttons: {[b['text'] for b in btns[:10]]}"
 
     # ── Шаг 6: В модалке выбрать нового брокера ──
     try:
@@ -3482,6 +3521,7 @@ async def action_change_distribution(aff_id: str, country: str,
         return "❌ Add broker modal did not open."
 
     await page.wait_for_timeout(500)
+    log.info("[dist] Step 6: modal opened")
 
     # Кликаем на дропдаун брокеров
     dropdown = await modal.query_selector(
@@ -3490,17 +3530,20 @@ async def action_change_distribution(aff_id: str, country: str,
     if dropdown:
         await dropdown.click()
         await page.wait_for_timeout(800)
+        log.info("[dist] Step 6: dropdown clicked")
 
     # Ищем поле поиска
     broker_search = await page.query_selector("input[id*='search-input']")
     if not broker_search:
         broker_search = await page.query_selector(
-            ".bg-white input[type='text'], [class*='dropdown__menu'] input"
+            ".bg-white input[type='text'], [class*='dropdown__menu'] input, "
+            "[class*='dropdown-content'] input"
         )
 
     if broker_search:
         await broker_search.click()
         await broker_search.type(str(new_broker_id), delay=60)
+        log.info(f"[dist] Step 6: typed broker '{new_broker_id}'")
         for _ in range(20):
             await page.wait_for_timeout(300)
             cnt = await page.evaluate("() => document.querySelectorAll('li.dropdown-item, li.flex-fill').length")
@@ -3513,44 +3556,50 @@ async def action_change_distribution(aff_id: str, country: str,
     # Выбираем брокера из списка (приоритет Latam для LATAM стран)
     is_latam = country.lower() in LATAM_COUNTRIES
     items = await page.query_selector_all("li.dropdown-item, li.flex-fill")
+    log.info(f"[dist] Step 6: {len(items)} items in dropdown")
     selected = False
     selected_name = ""
+
+    # Первый проход: ищем с учётом Latam предпочтения
     for item in items:
         txt = (await item.inner_text()).strip()
         if str(new_broker_id) in txt:
-            # Для LATAM стран предпочитаем Latam вариант
             if is_latam and "latam" not in txt.lower() and len(items) > 1:
                 continue
             await item.click()
             selected = True
             selected_name = txt
+            log.info(f"[dist] Step 6: selected '{txt}'")
             break
 
+    # Fallback: берём первый результат содержащий broker_id
     if not selected:
-        # Fallback: берём первый результат содержащий broker_id
         for item in items:
             txt = (await item.inner_text()).strip()
             if str(new_broker_id) in txt:
                 await item.click()
                 selected = True
                 selected_name = txt
+                log.info(f"[dist] Step 6: fallback selected '{txt}'")
                 break
 
     if not selected:
+        item_texts = []
+        for item in items[:5]:
+            item_texts.append((await item.inner_text()).strip())
         await _close_modal(page)
-        return f"❌ Broker {new_broker_id} not found in dropdown."
+        return f"❌ Broker {new_broker_id} not found. Items: {item_texts}"
 
     await page.wait_for_timeout(500)
 
     # ── Шаг 7: Нажать кнопку ADD [broker_name] ──
     try:
-        # Ищем кнопку с текстом "ADD" внутри модалки
         add_confirm = await page.wait_for_selector(
             ".modal button.btn-ladda, .modal button:has-text('ADD')", timeout=5000
         )
         await add_confirm.click()
         await page.wait_for_timeout(1500)
-        log.info(f"Added broker {selected_name} to distribution")
+        log.info(f"[dist] Step 7: ADD confirmed for {selected_name}")
     except Exception:
         await _close_modal(page)
         return f"❌ ADD button not found after selecting broker."
@@ -3558,29 +3607,31 @@ async def action_change_distribution(aff_id: str, country: str,
     # ── Шаг 8: Поставить старому брокеру 0% ──
     set_zero = await page.evaluate("""(oldBrokerId) => {
         // Ищем строку с этим broker ID и меняем input с процентами
-        const rows = document.querySelectorAll('[class*="broker-distribution"], tr, [class*="row"]');
-        for (const row of rows) {
-            const text = row.innerText || '';
+        const allElements = document.querySelectorAll('[class*="broker-distribution"], [class*="item-row"], tr, div[class*="row"]');
+        for (const el of allElements) {
+            const text = el.innerText || '';
             if (!text.includes(oldBrokerId)) continue;
-            // Ищем input типа tel или number (процент)
-            const inputs = row.querySelectorAll('input[type="tel"], input[type="number"], input[type="text"]');
+            // Ищем input с процентами (type=tel в CRM)
+            const inputs = el.querySelectorAll('input[type="tel"], input[type="number"], input.form-control');
             for (const input of inputs) {
                 const val = input.value;
-                // Это поле с процентом (обычно содержит число)
-                if (/^\d+$/.test(val) || val === '100' || val === '10') {
+                if (/^\d+$/.test(val)) {
+                    input.focus();
                     input.value = '0';
                     input.dispatchEvent(new Event('input', {bubbles: true}));
                     input.dispatchEvent(new Event('change', {bubbles: true}));
                     input.dispatchEvent(new Event('blur', {bubbles: true}));
-                    return true;
+                    return {success: true, oldValue: val};
                 }
             }
         }
-        return false;
+        return {success: false};
     }""", str(old_broker_id))
 
-    if not set_zero:
-        log.warning(f"Could not set old broker {old_broker_id} to 0% — may need manual adjustment")
+    log.info(f"[dist] Step 8: set_zero result = {set_zero}")
+
+    if not set_zero.get("success"):
+        log.warning(f"[dist] Could not set old broker {old_broker_id} to 0%")
 
     await page.wait_for_timeout(500)
 
@@ -3596,9 +3647,9 @@ async def action_change_distribution(aff_id: str, country: str,
         old_clean = re.sub(r'^\d+\s*-\s*', '', str(old_broker_id)).strip()
         new_clean = re.sub(r'^\d+\s*-\s*', '', selected_name).strip()
         result = f"✅ Rotation changed for aff {aff_id} / {country}:\n{old_clean} → 0%\n{new_clean} → 100%"
-        if not set_zero:
+        if not set_zero.get("success"):
             result += "\n⚠️ Old broker % may need manual adjustment"
-        log.info(result)
+        log.info(f"[dist] Step 9: {result}")
         return result
     except Exception:
         return "❌ SAVE GROUP(S) button not found. Changes may not have been saved."
