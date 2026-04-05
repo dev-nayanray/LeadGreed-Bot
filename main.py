@@ -3428,6 +3428,24 @@ async def action_change_distribution(aff_id: str, country: str,
     if not badge_result.get("clicked"):
         return f"❌ Country '{country}' badge not found. Debug: {badge_result}"
 
+    # Попробуем Playwright click на тот же badge как fallback
+    await page.wait_for_timeout(1000)
+    try:
+        pw_badge = await page.query_selector("span.badge.clickable, span.badge.badge-primary")
+        if pw_badge:
+            badge_txt = (await pw_badge.inner_text()).strip()
+            log.info(f"[dist] Step 3: also trying Playwright click on badge '{badge_txt}'")
+            await pw_badge.click()
+    except Exception:
+        pass
+
+    # Скриншот для дебага
+    try:
+        await page.screenshot(path="/root/auto-b2026/dist_debug.png")
+        log.info("[dist] Step 3: screenshot saved to /root/auto-b2026/dist_debug.png")
+    except Exception as e:
+        log.warning(f"[dist] Step 3: screenshot failed: {e}")
+
     # Ждём пока подтаблица с аффилиатами загрузится (количество td должно вырасти)
     prev_tds = 0
     stable = 0
