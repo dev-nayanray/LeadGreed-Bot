@@ -3403,110 +3403,145 @@ async def action_change_distribution(aff_id: str, country: str,
     log.info(f"[dist] Step 2: typed '{search_term}'")
     await page.wait_for_timeout(2500)
 
-    # ── Шаг 3: Кликнуть на badge именно для нужной страны (JS click в правильной строке) ──
-    badge_result = await page.evaluate("""(countryQuery) => {
-        const rows = document.querySelectorAll('table tr');
-        for (const row of rows) {
-            const firstTd = row.querySelector('td');
-            if (!firstTd) continue;
-            const countryText = firstTd.innerText.trim();
-            if (!countryText.toLowerCase().includes(countryQuery.toLowerCase())) continue;
-            // Нашли строку страны — кликаем badge
-            const badge = row.querySelector('span.badge, span[class*="badge"]');
-            if (badge) {
-                const badgeText = badge.innerText.trim();
-                badge.click();
-                return {clicked: true, badge: badgeText, country: countryText};
-            }
-            return {clicked: false, country: countryText, noBadge: true};
-        }
-        return {clicked: false, noCountry: true};
-    }""", search_term)
-
-    log.info(f"[dist] Step 3: badge_result = {badge_result}")
-
-    if not badge_result.get("clicked"):
-        return f"❌ Country '{country}' badge not found. Debug: {badge_result}"
-
-    # JS click часто не триггерит Vue — используем Playwright click по тексту badge
-    await page.wait_for_timeout(500)
+    # ── Шаг 3: Нажать ALL в Group by чтобы увидеть ВСЕ distributions ──
     try:
-        await page.click(f"text=/{badge_result.get('badge', 'distributions')}/", timeout=3000)
-        log.info(f"[dist] Step 3: Playwright text-click on '{badge_result.get('badge')}'")
-    except Exception as e:
-        log.warning(f"[dist] Step 3: Playwright text-click failed: {e}")
-        # Fallback: кликаем по координатам badge
-        try:
-            badge_el = await page.query_selector("span.badge")
-            if badge_el:
-                box = await badge_el.bounding_box()
-                if box:
-                    await page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
-                    log.info(f"[dist] Step 3: mouse click at badge center ({box})")
-        except Exception:
-            pass
+        await page.click("button:has-text('ALL')", timeout=5000)
+        log.info("[dist] Step 3: clicked ALL group-by button")
+    except Exception:
+        return "❌ ALL group-by button not found."
 
-    # Ждём пока подтаблица с аффилиатами загрузится (количество td должно вырасти)
+    await page.wait_for_timeout(1500)
+
+    # Фильтруем по стране через sidebar dropdown
+    async def _select_filter(placeholder: str, value: str):
+        """Выбрать значение в фильтре sidebar."""
+        dropdowns = await page.query_selector_all(
+            ".sidebar-component select, .sidebar-component .custom-select, "
+            "[class*='sidebar'] select"
+        )
+        # Ищем select/dropdown по placeholder тексту
+        filter_el = None
+        all_selects = await page.query_selector_all("select, .custom-select")
+        for sel in all_selects:
+            opts = await sel.inner_text()
+            if placeholder.lower() in opts.lower():
+                filter_el = sel
+                break
+
+        # Пробуем через smart_dropdown кнопки в sidebar
+        sidebar_btns = await page.query_selector_all(
+            "[class*='sidebar'] .smart__dropdown, "
+            "[class*='sidebar'] [class*='multiselect'], "
+            ".sidebar-component .smart__dropdown"
+        )
+        for btn in sidebar_btns:
+            btn_text = (await btn.inner_text()).strip()
+            if placeholder.lower() in btn_text.lower():
+                await btn.click()
+                await page.wait_for_timeout(600)
+                # Ищем search input
+                search = await page.query_selector("input[id*='search-input'], input[id*='search']")
+                if search:
+                    await search.click()
+                    await search.type(value, delay=50)
+                    await page.wait_for_timeout(800)
+                # Выбираем из списка
+                items = await page.query_selector_all("li.dropdown-item, li.flex-fill")
+                for item in items:
+                    txt = (await item.inner_text()).strip()
+                    if value.lower() in txt.lower():
+                        await item.click()
+                        await page.wait_for_timeout(500)
+                        return True
+        return False
+
+    # Очищаем поиск и ищем по стране + аффу
+    search_input = await page.query_selector(
+        "input[placeholder*='earch'], input.form-control[type='text']"
+    )
+    if search_input:
+        await search_input.click(click_count=3)
+        await page.keyboard.press("Backspace")
+        await page.wait_for_timeout(300)
+        # В ALL view ищем формат "Country - AffID"
+        search_query = f"{search_term}"
+        await search_input.type(search_query, delay=60)
+        log.info(f"[dist] Step 3: searching '{search_query}' in ALL view")
+        await page.wait_for_timeout(2500)
+
+    # Ждём загрузку таблицы
     prev_tds = 0
     stable = 0
-    for _ in range(25):
+    for _ in range(20):
         await page.wait_for_timeout(500)
         cur_tds = await page.evaluate("() => document.querySelectorAll('td').length")
-        if cur_tds > 10 and cur_tds == prev_tds:
+        if cur_tds > 3 and cur_tds == prev_tds:
             stable += 1
             if stable >= 2:
                 break
         else:
             stable = 0
         prev_tds = cur_tds
-    log.info(f"[dist] Step 3: waited for affiliates, {cur_tds} tds found. URL = {page.url}")
+    log.info(f"[dist] Step 3: {cur_tds} tds in ALL view")
 
-    # ── Шаг 4: Найти строку аффилиата и открыть ротацию ──
-    # Ищем по <td> содержимому (не по всему <tr>), чтобы не попасть в wrapper-ряд
-    edit_result = await page.evaluate("""(affId) => {
+    # Скриншот для дебага
+    try:
+        await page.screenshot(path="/root/auto-b2026/dist_debug.png")
+    except Exception:
+        pass
+
+    # ── Шаг 4: Найти строку с нужным аффом и страной → кликнуть edit ──
+    # В ALL view каждая строка = отдельная distribution: "Country - AffID - Name (ID) (AffID)"
+    edit_result = await page.evaluate("""(params) => {
+        const affId = params.affId;
+        const country = params.country;
         const debug = [];
-        // Ищем все ячейки таблицы содержащие ID аффилиата
-        const tds = document.querySelectorAll('td');
-        for (const td of tds) {
-            const tdText = td.innerText.trim();
-            // Матчим только если <td> НАПРЯМУЮ содержит паттерн с аффом
-            // Формат: "Mexico - 31 - Leada (453) (31)" или "(31)"
-            const patterns = [
-                '- ' + affId + ' -',
-                '(' + affId + ')',
-            ];
-            if (!patterns.some(p => tdText.includes(p))) continue;
-            // Проверяем что это не слишком длинная ячейка (wrapper)
-            if (tdText.length > 200) continue;
-            debug.push(tdText.substring(0, 80));
+        const rows = document.querySelectorAll('table tr, tr[role="row"]');
 
-            // Нашли правильную ячейку — ищем кнопку в этом же ряду
-            const row = td.closest('tr');
-            if (!row) continue;
+        for (const row of rows) {
+            const text = row.innerText || '';
+            if (text.length > 500) continue;
 
-            // Ищем первую кнопку-иконку (btn-outline-primary btn-sm) в Actions колонке
-            const btns = row.querySelectorAll('button.btn-outline-primary.btn-sm, button.btn-sm.btn-secondary');
-            for (const btn of btns) {
-                if (btn.className.includes('btn-danger')) continue;
-                // Первая подходящая кнопка (иконка без текста = карандаш/глаз)
-                btn.click();
-                return {clicked: true, affText: tdText.substring(0, 80), btnCls: btn.className.substring(0, 60)};
+            // Проверяем наличие аффа И страны в одной строке
+            const hasAff = text.includes('- ' + affId + ' -') || text.includes('(' + affId + ')') || text.includes(' ' + affId + ' ');
+            const hasCountry = text.toLowerCase().includes(country.toLowerCase());
+
+            if (hasAff && hasCountry) {
+                debug.push({text: text.substring(0, 120), match: 'both'});
+                // Ищем кнопку edit
+                const btns = row.querySelectorAll('button');
+                for (const btn of btns) {
+                    const cls = btn.className || '';
+                    if (cls.includes('btn-danger')) continue;
+                    if (cls.includes('btn-outline-primary') && cls.includes('btn-sm')) {
+                        btn.click();
+                        return {clicked: true, text: text.substring(0, 120)};
+                    }
+                }
+                // Fallback: первая кнопка с иконкой
+                for (const btn of btns) {
+                    if (btn.className.includes('btn-danger')) continue;
+                    if (btn.querySelector('svg, i') || !btn.innerText.trim()) {
+                        btn.click();
+                        return {clicked: true, text: text.substring(0, 120), fallback: true};
+                    }
+                }
+                return {clicked: false, text: text.substring(0, 120), noBtns: true, btnCount: btns.length};
             }
-            return {clicked: false, affText: tdText.substring(0, 80), noBtns: true, rowBtns: row.querySelectorAll('button').length};
+
+            // Дебаг: записываем строки которые совпадают частично
+            if (hasAff || hasCountry) {
+                debug.push({text: text.substring(0, 100), hasAff, hasCountry});
+            }
         }
-        // Fallback debug: показать все td которые содержат число похожее на affId
-        const allTexts = [];
-        for (const td of tds) {
-            const t = td.innerText.trim();
-            if (t.includes(affId) && t.length < 150) allTexts.push(t.substring(0, 80));
-        }
-        return {clicked: false, debug: debug.slice(0, 5), allMatches: allTexts.slice(0, 5), totalTds: tds.length};
-    }""", str(aff_id))
+
+        return {clicked: false, debug: debug.slice(0, 8), totalRows: rows.length};
+    }""", {"affId": str(aff_id), "country": search_term})
 
     log.info(f"[dist] Step 4: edit_result = {edit_result}")
 
     if not edit_result.get("clicked"):
-        return f"❌ Affiliate {aff_id} not found in {country} distributions. Debug: {edit_result}"
+        return f"❌ Affiliate {aff_id} / {country} not found. Debug: {edit_result}"
 
     await page.wait_for_timeout(3000)
     log.info(f"[dist] Step 4: URL after edit click = {page.url}")
