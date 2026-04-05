@@ -3428,23 +3428,23 @@ async def action_change_distribution(aff_id: str, country: str,
     if not badge_result.get("clicked"):
         return f"❌ Country '{country}' badge not found. Debug: {badge_result}"
 
-    # Попробуем Playwright click на тот же badge как fallback
-    await page.wait_for_timeout(1000)
+    # JS click часто не триггерит Vue — используем Playwright click по тексту badge
+    await page.wait_for_timeout(500)
     try:
-        pw_badge = await page.query_selector("span.badge.clickable, span.badge.badge-primary")
-        if pw_badge:
-            badge_txt = (await pw_badge.inner_text()).strip()
-            log.info(f"[dist] Step 3: also trying Playwright click on badge '{badge_txt}'")
-            await pw_badge.click()
-    except Exception:
-        pass
-
-    # Скриншот для дебага
-    try:
-        await page.screenshot(path="/root/auto-b2026/dist_debug.png")
-        log.info("[dist] Step 3: screenshot saved to /root/auto-b2026/dist_debug.png")
+        await page.click(f"text=/{badge_result.get('badge', 'distributions')}/", timeout=3000)
+        log.info(f"[dist] Step 3: Playwright text-click on '{badge_result.get('badge')}'")
     except Exception as e:
-        log.warning(f"[dist] Step 3: screenshot failed: {e}")
+        log.warning(f"[dist] Step 3: Playwright text-click failed: {e}")
+        # Fallback: кликаем по координатам badge
+        try:
+            badge_el = await page.query_selector("span.badge")
+            if badge_el:
+                box = await badge_el.bounding_box()
+                if box:
+                    await page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+                    log.info(f"[dist] Step 3: mouse click at badge center ({box})")
+        except Exception:
+            pass
 
     # Ждём пока подтаблица с аффилиатами загрузится (количество td должно вырасти)
     prev_tds = 0
