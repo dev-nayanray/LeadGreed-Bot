@@ -3403,38 +3403,23 @@ async def action_change_distribution(aff_id: str, country: str,
     log.info(f"[dist] Step 2: typed '{search_term}'")
     await page.wait_for_timeout(2500)
 
-    # ── Шаг 3: Кликнуть на badge с distributions ──
-    badge_result = await page.evaluate("""(countryQuery) => {
-        const rows = document.querySelectorAll('table tr, tr');
-        const debug = [];
-        for (const row of rows) {
-            const tds = row.querySelectorAll('td');
-            if (tds.length < 2) continue;
-            const countryTd = tds[0];
-            const countryText = countryTd.innerText.trim();
-            if (!countryText) continue;
-            debug.push(countryText);
-            if (!countryText.toLowerCase().includes(countryQuery.toLowerCase())) continue;
-            // Ищем кликабельный badge
-            const badge = row.querySelector('span.badge, span[class*="badge"], a[class*="badge"]');
-            if (badge) { badge.click(); return {clicked: true, country: countryText}; }
-            // Fallback: любой span с числом в тексте
-            const spans = row.querySelectorAll('span');
-            for (const span of spans) {
-                if (/\d+ distribution/.test(span.innerText)) {
-                    span.click();
-                    return {clicked: true, country: countryText, fallback: true};
-                }
-            }
-            return {clicked: false, country: countryText, noBadge: true};
-        }
-        return {clicked: false, rows: debug.slice(0, 10)};
-    }""", search_term)
+    # ── Шаг 3: Кликнуть на badge с distributions (через Playwright, не JS) ──
+    badge = await page.query_selector("span.badge.clickable, span.badge.badge-primary, span.badge[class*='clickable']")
+    if not badge:
+        # Fallback: ищем любой badge в таблице
+        badges = await page.query_selector_all("span.badge, span[class*='badge-primary']")
+        for b in badges:
+            txt = (await b.inner_text()).strip()
+            if "distribution" in txt.lower():
+                badge = b
+                break
+    if not badge:
+        rows_debug = await page.evaluate("() => Array.from(document.querySelectorAll('td')).map(td => td.innerText.trim()).slice(0, 10)")
+        return f"❌ Country badge not found. Page tds: {rows_debug}"
 
-    log.info(f"[dist] Step 3: badge_result = {badge_result}")
-
-    if not badge_result.get("clicked"):
-        return f"❌ Country '{country}' not found in distributions. Debug: {badge_result}"
+    badge_text = (await badge.inner_text()).strip()
+    log.info(f"[dist] Step 3: clicking badge '{badge_text}' via Playwright")
+    await badge.click()  # Playwright native click — триггерит Vue
 
     # Ждём пока подтаблица с аффилиатами загрузится (количество td должно вырасти)
     prev_tds = 0
