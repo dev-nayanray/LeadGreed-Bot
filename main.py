@@ -68,6 +68,10 @@ fired_started: set = set()
 # Алерты о нулевой конверсии — ключ: "broker_name|aff_id", сбрасывается в midnight
 _fired_no_conv: set = set()
 
+# Подавленные алерты (Dismiss/Replace) — ключ: "broker_id|aff_id|country", значение: ISO timestamp
+# Не сбрасывается в midnight — чистятся только записи старше 7 дней
+_suppressed_no_conv: dict = {}
+
 # Пороги лидов без FTD для алерта (зависят от страны)
 _NO_CONV_DEFAULT = 20
 _NO_CONV_HIGH = {"indonesia": 250}  # гео с высоким порогом
@@ -3359,6 +3363,247 @@ async def action_add_revenue(broker_id: str, country: str, amount: str, affiliat
         return "⚠️ Save button not found."
 
 
+async def action_change_distribution(aff_id: str, country: str,
+                                      old_broker_id: str, new_broker_id: str) -> str:
+    """Изменить ротацию: добавить нового брокера и поставить старому 0%.
+
+    Шаги:
+    1. Перейти на /distributions
+    2. Найти страну → открыть список ротаций
+    3. Найти строку аффа → открыть ротацию
+    4. ADD BROKER → выбрать нового → сохранить
+    5. Поставить старому 0% → SAVE GROUP(S)
+    """
+    page = await get_page()
+
+    # ── Шаг 1: Переход на страницу distributions ──
+    dist_url = f"{CRM_URL.rstrip('/')}/distributions"
+    await page.goto(dist_url, wait_until="domcontentloaded", timeout=30000)
+    await page.wait_for_timeout(2000)
+
+    # ── Шаг 2: Поиск страны ──
+    search_input = None
+    for selector in [
+        "input[type='search']",
+        "input[placeholder*='earch']",
+        "input.form-control[type='text']",
+    ]:
+        try:
+            search_input = await page.wait_for_selector(selector, timeout=3000)
+            if search_input:
+                break
+        except Exception:
+            continue
+
+    if not search_input:
+        return "❌ Distribution search input not found."
+
+    await search_input.click(click_count=3)
+    await page.keyboard.press("Backspace")
+    await page.wait_for_timeout(300)
+    await search_input.type(_country_search_term(country), delay=60)
+    await page.wait_for_timeout(2000)
+
+    # ── Шаг 3: Кликнуть на badge с distributions ──
+    badge_clicked = await page.evaluate("""(countryQuery) => {
+        const rows = document.querySelectorAll('table tr, tr');
+        for (const row of rows) {
+            const tds = row.querySelectorAll('td');
+            if (tds.length < 2) continue;
+            const countryTd = tds[0];
+            if (!countryTd.innerText.toLowerCase().includes(countryQuery.toLowerCase())) continue;
+            const badge = row.querySelector('.badge, span[class*="badge"]');
+            if (badge) { badge.click(); return true; }
+        }
+        return false;
+    }""", _country_search_term(country))
+
+    if not badge_clicked:
+        return f"❌ Country '{country}' not found in distributions."
+
+    await page.wait_for_timeout(2000)
+
+    # ── Шаг 4: Найти строку аффилиата и открыть ротацию ──
+    # Ищем строку содержащую aff_id и кликаем кнопку редактирования
+    edit_clicked = await page.evaluate("""(affId) => {
+        const rows = document.querySelectorAll('table tr, tr, [class*="row"]');
+        for (const row of rows) {
+            const text = row.innerText;
+            // Ищем строку где есть "- AFF_ID -" или "(AFF_ID)" или просто AFF_ID как отдельное число
+            const patterns = [
+                '- ' + affId + ' -',
+                '(' + affId + ')',
+                ' ' + affId + ' ',
+            ];
+            const match = patterns.some(p => text.includes(p));
+            if (!match) continue;
+            // Ищем кнопку редактирования (карандаш)
+            const editBtns = row.querySelectorAll(
+                'button.btn-outline-primary.btn-sm.btn-secondary, ' +
+                'button.btn-sm.btn-secondary, ' +
+                'a[href*="distribution"]'
+            );
+            for (const btn of editBtns) {
+                // Пропускаем delete (красные) кнопки
+                if (btn.classList.contains('btn-danger')) continue;
+                const icon = btn.querySelector('svg, i');
+                if (icon || btn.innerText.trim() === '') {
+                    btn.click();
+                    return true;
+                }
+            }
+            // Fallback: любая кнопка в этой строке
+            const anyBtn = row.querySelector('button.btn-outline-primary');
+            if (anyBtn) { anyBtn.click(); return true; }
+        }
+        return false;
+    }""", str(aff_id))
+
+    if not edit_clicked:
+        return f"❌ Affiliate {aff_id} not found in {country} distributions."
+
+    await page.wait_for_timeout(2000)
+
+    # ── Шаг 5: Нажать + ADD BROKER ──
+    try:
+        add_btn = await page.wait_for_selector(
+            "button:has-text('ADD BROKER'), .btn:has-text('ADD BROKER')",
+            timeout=8000
+        )
+        await add_btn.click()
+        await page.wait_for_timeout(1000)
+    except Exception:
+        return "❌ ADD BROKER button not found."
+
+    # ── Шаг 6: В модалке выбрать нового брокера ──
+    try:
+        modal = await page.wait_for_selector(".modal-body, [role='dialog']", timeout=5000)
+    except Exception:
+        return "❌ Add broker modal did not open."
+
+    await page.wait_for_timeout(500)
+
+    # Кликаем на дропдаун брокеров
+    dropdown = await modal.query_selector(
+        ".smart__dropdown, [class*='smart__dropdown'], .smart__dropdown__input__element"
+    )
+    if dropdown:
+        await dropdown.click()
+        await page.wait_for_timeout(800)
+
+    # Ищем поле поиска
+    broker_search = await page.query_selector("input[id*='search-input']")
+    if not broker_search:
+        broker_search = await page.query_selector(
+            ".bg-white input[type='text'], [class*='dropdown__menu'] input"
+        )
+
+    if broker_search:
+        await broker_search.click()
+        await broker_search.type(str(new_broker_id), delay=60)
+        for _ in range(20):
+            await page.wait_for_timeout(300)
+            cnt = await page.evaluate("() => document.querySelectorAll('li.dropdown-item, li.flex-fill').length")
+            if cnt < 10:
+                break
+    else:
+        await _close_modal(page)
+        return "❌ Broker search input not found in modal."
+
+    # Выбираем брокера из списка (приоритет Latam для LATAM стран)
+    is_latam = country.lower() in LATAM_COUNTRIES
+    items = await page.query_selector_all("li.dropdown-item, li.flex-fill")
+    selected = False
+    selected_name = ""
+    for item in items:
+        txt = (await item.inner_text()).strip()
+        if str(new_broker_id) in txt:
+            # Для LATAM стран предпочитаем Latam вариант
+            if is_latam and "latam" not in txt.lower() and len(items) > 1:
+                continue
+            await item.click()
+            selected = True
+            selected_name = txt
+            break
+
+    if not selected:
+        # Fallback: берём первый результат содержащий broker_id
+        for item in items:
+            txt = (await item.inner_text()).strip()
+            if str(new_broker_id) in txt:
+                await item.click()
+                selected = True
+                selected_name = txt
+                break
+
+    if not selected:
+        await _close_modal(page)
+        return f"❌ Broker {new_broker_id} not found in dropdown."
+
+    await page.wait_for_timeout(500)
+
+    # ── Шаг 7: Нажать кнопку ADD [broker_name] ──
+    try:
+        # Ищем кнопку с текстом "ADD" внутри модалки
+        add_confirm = await page.wait_for_selector(
+            ".modal button.btn-ladda, .modal button:has-text('ADD')", timeout=5000
+        )
+        await add_confirm.click()
+        await page.wait_for_timeout(1500)
+        log.info(f"Added broker {selected_name} to distribution")
+    except Exception:
+        await _close_modal(page)
+        return f"❌ ADD button not found after selecting broker."
+
+    # ── Шаг 8: Поставить старому брокеру 0% ──
+    set_zero = await page.evaluate("""(oldBrokerId) => {
+        // Ищем строку с этим broker ID и меняем input с процентами
+        const rows = document.querySelectorAll('[class*="broker-distribution"], tr, [class*="row"]');
+        for (const row of rows) {
+            const text = row.innerText || '';
+            if (!text.includes(oldBrokerId)) continue;
+            // Ищем input типа tel или number (процент)
+            const inputs = row.querySelectorAll('input[type="tel"], input[type="number"], input[type="text"]');
+            for (const input of inputs) {
+                const val = input.value;
+                // Это поле с процентом (обычно содержит число)
+                if (/^\d+$/.test(val) || val === '100' || val === '10') {
+                    input.value = '0';
+                    input.dispatchEvent(new Event('input', {bubbles: true}));
+                    input.dispatchEvent(new Event('change', {bubbles: true}));
+                    input.dispatchEvent(new Event('blur', {bubbles: true}));
+                    return true;
+                }
+            }
+        }
+        return false;
+    }""", str(old_broker_id))
+
+    if not set_zero:
+        log.warning(f"Could not set old broker {old_broker_id} to 0% — may need manual adjustment")
+
+    await page.wait_for_timeout(500)
+
+    # ── Шаг 9: Нажать SAVE GROUP(S) ──
+    try:
+        save_btn = await page.wait_for_selector(
+            "button:has-text('SAVE GROUP'), button.btn-ladda.btn-success:has-text('SAVE')",
+            timeout=5000
+        )
+        await save_btn.click()
+        await page.wait_for_timeout(2000)
+
+        old_clean = re.sub(r'^\d+\s*-\s*', '', str(old_broker_id)).strip()
+        new_clean = re.sub(r'^\d+\s*-\s*', '', selected_name).strip()
+        result = f"✅ Rotation changed for aff {aff_id} / {country}:\n{old_clean} → 0%\n{new_clean} → 100%"
+        if not set_zero:
+            result += "\n⚠️ Old broker % may need manual adjustment"
+        log.info(result)
+        return result
+    except Exception:
+        return "❌ SAVE GROUP(S) button not found. Changes may not have been saved."
+
+
 async def _close_modal(page) -> None:
     """Закрыть модальное окно если оно открыто."""
     try:
@@ -5713,6 +5958,41 @@ async def _execute_confirmed_task(bot, chat_id: int, action: dict):
         results = []
         a = action["action"]
 
+        # replace_distribution — замена брокера в ротации из NO CONVERSION алерта
+        if a == "replace_distribution":
+            aff_id = action["aff_id"]
+            country = action["country_name"]
+            old_bid = action["old_broker_id"]
+            new_bid = action["new_broker_id"]
+            old_name = action.get("old_broker_name", old_bid)
+            new_name = action.get("new_broker_name", new_bid)
+
+            lid = alog.log_action("replace_distribution", old_bid,
+                                  f"aff={aff_id} {country} {old_bid}->{new_bid}",
+                                  "pending")
+            try:
+                result_msg = await action_change_distribution(
+                    aff_id=aff_id, country=country,
+                    old_broker_id=old_bid, new_broker_id=new_bid,
+                )
+                is_success = "❌" not in result_msg
+                if is_success:
+                    # Подавляем все bad brokers для этого аффа+страны
+                    now_iso = datetime.datetime.now(datetime.UTC).isoformat()
+                    for _bn, _bl, bid in action.get("bad_brokers", []):
+                        suppress_key = f"{bid}|{aff_id}|{country}"
+                        _suppressed_no_conv[suppress_key] = now_iso
+                    _save_rotations()
+                    alog.update_action(lid, "success", result_msg[:200])
+                else:
+                    alog.update_action(lid, "error", result_msg[:200])
+                await bot.send_message(chat_id, result_msg, disable_notification=True)
+            except Exception as e:
+                err_msg = f"❌ Distribution replace failed: {e}"
+                alog.update_action(lid, "error", str(e)[:200])
+                await bot.send_message(chat_id, err_msg, disable_notification=True)
+            return
+
         # set_prices — мульти-прайс (брокер + аффилиат в одном сообщении)
         if a == "set_prices":
             price_tasks = action.get("price_tasks", [])
@@ -7172,6 +7452,50 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Cancelled. Nothing changed.")
         return
 
+    # ── Обработка кнопок NO CONVERSION алертов ──
+    if query.data.startswith("rd:") or query.data.startswith("dd:"):
+        stored = pending.pop(pending_key, None)
+        if not stored or not stored.get("_alert_action"):
+            await query.edit_message_text("Alert expired. Run /analyze to re-scan.")
+            return
+
+        if query.data.startswith("dd:"):
+            # Dismiss — подавить все bad brokers для этого аффа+страны на 7 дней
+            now_iso = datetime.datetime.now(datetime.UTC).isoformat()
+            for _bn, _bl, bid in stored["bad_brokers"]:
+                suppress_key = f"{bid}|{stored['aff_id']}|{stored['country_name']}"
+                _suppressed_no_conv[suppress_key] = now_iso
+            _save_rotations()
+            original = query.message.text or ""
+            await query.edit_message_text(original + "\n\n--- Dismissed for 7 days ---")
+            log.info(f"Conv alert dismissed: aff {stored['aff_id']} + {stored['country_iso']}")
+            return
+
+        if query.data.startswith("rd:"):
+            # Replace — поставить замену в очередь
+            if not stored.get("best_bid"):
+                await query.edit_message_text("No replacement candidate available.")
+                return
+            action = {
+                "action": "replace_distribution",
+                "aff_id": stored["aff_id"],
+                "country_name": stored["country_name"],
+                "old_broker_id": stored["worst_bid"],
+                "new_broker_id": stored["best_bid"],
+                "old_broker_name": stored["worst_name"],
+                "new_broker_name": stored["best_name"],
+                "bad_brokers": stored["bad_brokers"],
+            }
+            queue_size = _task_queue.qsize()
+            is_busy = _worker_busy or queue_size > 0
+            if is_busy:
+                position = queue_size + (1 if _worker_busy else 0) + 1
+                await query.edit_message_text(f"⏳ Replacing rotation, position #{position}…")
+            else:
+                await query.edit_message_text("⏳ Replacing rotation...")
+            await enqueue(_execute_confirmed_task, context.bot, chat_id, action)
+            return
+
     stored = pending.pop(pending_key, None)
     if not stored:
         await query.edit_message_text("❌ Command expired. Please resend.")
@@ -7427,6 +7751,8 @@ def _load_rotations():
                 fired_started.update(data.get("fired_started", []))
                 _fired_no_conv.clear()
                 _fired_no_conv.update(data.get("fired_no_conv", []))
+                _suppressed_no_conv.clear()
+                _suppressed_no_conv.update(data.get("suppressed_no_conv", {}))
             else:
                 today_rotations.clear()
                 today_rotations.update(data)
@@ -7456,6 +7782,7 @@ def _save_rotations():
                 "rotations": today_rotations,
                 "fired_started": list(fired_started),
                 "fired_no_conv": list(_fired_no_conv),
+                "suppressed_no_conv": _suppressed_no_conv,
             }, f, ensure_ascii=False, indent=2)
     except Exception as e:
         log.warning(f"Failed to save rotations: {e}")
@@ -8012,9 +8339,11 @@ async def _check_conversion_alerts(bot):
                 alert_key = f"{broker_id}|{aff_id_str}|{country_name}"
                 if alert_key in _fired_no_conv:
                     continue
+                if alert_key in _suppressed_no_conv:
+                    continue
 
                 _fired_no_conv.add(alert_key)
-                bad_brokers.append((broker_name, leads_7d))
+                bad_brokers.append((broker_name, leads_7d, broker_id))
 
             if not bad_brokers:
                 continue
@@ -8033,7 +8362,7 @@ async def _check_conversion_alerts(bot):
                     narrow_country=country_name,
                     from_date=year_start, to_date=today_str,
                 )
-                bad_ids = {b.get("id") for b in brokers_7d if any(bn == (b.get("name", "").replace('\U0001f7e9', '').strip()) for bn, _ in bad_brokers)}
+                bad_ids = {bid for _, _, bid in bad_brokers}
                 candidates = [
                     c for c in yearly
                     if c.get("total_ftds", 0) > 0
@@ -8083,12 +8412,12 @@ async def _check_conversion_alerts(bot):
 
             # Формируем ОДНО сообщение для аффа+страны
             bad_lines = []
-            for bname, bleads in bad_brokers:
+            for bname, bleads, _bid in bad_brokers:
                 bad_lines.append(f"  {bname}: {bleads} leads, 0 FTD")
 
             msg = (
                 f"\u26a0\ufe0f NO CONVERSION — {flag}{country_name}\n"
-                f"Affiliate: {aff_name}\n"
+                f"Affiliate: {aff_id_str} - {aff_name}\n"
                 f"Threshold: {threshold} leads (7 days)\n\n"
                 f"Problem brokers:\n"
                 + "\n".join(bad_lines)
@@ -8097,14 +8426,56 @@ async def _check_conversion_alerts(bot):
 
             log.info(f"Conv alert: aff {aff_id_str} + {country_iso} — {len(bad_brokers)} bad brokers")
 
+            # Кнопки: Replace (если есть кандидат) + Dismiss
+            worst_broker = max(bad_brokers, key=lambda x: x[1])
+            worst_name, worst_leads, worst_bid = worst_broker
+
+            buttons = []
+            best_candidate = None
+            if candidates:
+                best_candidate = candidates[0]
+                best_id = best_candidate.get("id")
+                best_name = (best_candidate.get("name", "?") or "?").replace('\U0001f7e9', '').replace('\U0001f7e2', '').strip()
+                # Убираем числовой префикс из имени для кнопки
+                old_short = re.sub(r'^\d+\s*-\s*', '', worst_name).strip()[:15]
+                new_short = re.sub(r'^\d+\s*-\s*', '', best_name).strip()[:15]
+                cb_replace = f"rd:{worst_bid}:{best_id}:{aff_id_str}:{country_iso}"
+                if len(cb_replace.encode()) <= 64:
+                    buttons.append(InlineKeyboardButton(
+                        f"Replace {old_short} → {new_short}",
+                        callback_data=cb_replace
+                    ))
+
+            cb_dismiss = f"dd:{worst_bid}:{aff_id_str}:{country_iso}"
+            buttons.append(InlineKeyboardButton("Dismiss 7d", callback_data=cb_dismiss))
+
+            kb = InlineKeyboardMarkup([buttons])
+
             try:
-                # Отправляем без Markdown чтобы избежать parse errors
-                for chunk in _split_message(msg, 4000):
-                    await bot.send_message(
+                chunks = _split_message(msg, 4000)
+                for i, chunk in enumerate(chunks):
+                    # Кнопки только на последнем чанке
+                    markup = kb if (i == len(chunks) - 1) else None
+                    sent_msg = await bot.send_message(
                         REPORT_CHAT_ID,
                         chunk,
-                        disable_notification=True
+                        disable_notification=True,
+                        reply_markup=markup,
                     )
+                    # Сохраняем контекст для кнопок
+                    if markup and sent_msg:
+                        pending[(REPORT_CHAT_ID, sent_msg.message_id)] = {
+                            "_alert_action": True,
+                            "aff_id": aff_id_str,
+                            "aff_name": aff_name,
+                            "country_name": country_name,
+                            "country_iso": country_iso,
+                            "worst_bid": str(worst_bid),
+                            "worst_name": worst_name,
+                            "best_bid": str(best_candidate.get("id")) if best_candidate else None,
+                            "best_name": (best_candidate.get("name", "") or "").replace('\U0001f7e9', '').replace('\U0001f7e2', '').strip() if best_candidate else None,
+                            "bad_brokers": [(bn, bl, str(bi)) for bn, bl, bi in bad_brokers],
+                        }
                 alerts_sent += 1
             except Exception as e:
                 log.warning(f"Conv alert send error: {e}")
@@ -8367,9 +8738,12 @@ async def _report_loop(bot):
                 tomorrow_rotations.clear()
                 fired_started.clear()
                 _fired_no_conv.clear()
+                # Чистим подавленные алерты старше 7 дней (но НЕ сбрасываем все)
+                cutoff = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=7)).isoformat()
+                _suppressed_no_conv.update({k: v for k, v in _suppressed_no_conv.items() if v > cutoff})
                 _save_rotations()
                 _save_tomorrow_rotations()  # очищаем файл завтрашних
-                log.info(f"Midnight swap: today_rotations now has {len(today_rotations)} entries")
+                log.info(f"Midnight swap: today_rotations now has {len(today_rotations)} entries, suppressed: {len(_suppressed_no_conv)}")
 
             # Проверка "started" — с 01:00 GMT+3 (буфер после midnight swap)
             if today_rotations and local_hour >= 1:
